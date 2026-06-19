@@ -1,0 +1,51 @@
+# Field/production profile: headless LoRaWAN-only. No wifi/api/ota -- the node is
+# assumed out of WiFi range and on battery/solar. Flash and update over USB
+# serial; watch the OTAA join on the serial log. See README "Deployment".
+#
+# Keys come from lorawan-secrets.yaml (gitignored), namespaced per device. This
+# template uses the `kitchen_*` keys from example/lorawan-secrets.yaml.example.
+#
+# Why no wifi/api here: ESPHome's wifi: and api: both default to
+# reboot_timeout: 15min, so a configured-but-unreachable network reboot-loops the
+# device -- and every reboot re-joins, burning a DevNonce. Omitting them avoids
+# that entirely.
+
+esphome:
+  name: lorawan-kitchen
+
+esp32:
+  board: ttgo-lora32-v1
+  framework:
+    type: arduino
+
+# Serial only -- there is no network to log over in the field.
+logger:
+  baud_rate: 115200
+
+external_components:
+  - source: github://moellere/lorawan-for-esphome
+    components: [lorawan]
+
+sensor:
+  - platform: adc
+    pin: GPIO36
+    name: "Battery"
+    id: battery
+    update_interval: 60s
+  - platform: lorawan
+    lorawan_id: lw
+    sensor: battery
+
+lorawan:
+  id: lw
+  region: US915
+  sub_band: 2
+  dev_eui: !secret kitchen_dev_eui
+  join_eui: !secret kitchen_join_eui
+  app_key: !secret kitchen_app_key
+  uplink_interval: 15min
+  radio:
+    chip: sx1276
+    cs_pin: GPIO18
+    rst_pin: GPIO23
+    dio0_pin: GPIO26

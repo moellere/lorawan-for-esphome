@@ -86,6 +86,31 @@ from the same ordered list (in the consuming project) so device and server stay
 in lockstep. The encoding is deliberately trivial for the spike; a compact
 codec (scaling, integers, bitfields) is a later refinement.
 
+## Deployment
+
+A field LoRaWAN node is usually out of WiFi range and on battery/solar, so the
+production profile is **headless: no `wifi:`, no `api:`, no network `ota:`** —
+serial `logger:` only. See [`example/field-headless.yaml`](example/field-headless.yaml);
+[`example/spike-ttgo-lora32-v1.yaml`](example/spike-ttgo-lora32-v1.yaml) keeps WiFi
+and is a bench/observation config.
+
+Do not just leave WiFi configured and let it fail: ESPHome's `wifi:` and `api:`
+both default to `reboot_timeout: 15min`, so an unreachable network reboot-loops
+the device — and every reboot re-joins, burning a DevNonce. Omit those components
+(or set their `reboot_timeout: 0s`).
+
+Workflow — build, flash, and update are all **wired (USB serial)**:
+
+```bash
+esphome run example/field-headless.yaml --device /dev/ttyUSB0
+```
+
+Watch the serial log for `OTAA join OK` and `uplink sent`. Register the device and
+flush its DevNonces on the server once before first join; on later re-flashes,
+write the **app region only** to preserve the NVS-stored nonces (a full erase
+resets them). Future low-power (deep sleep) and remote-update (WiFi-on-demand via
+downlink) directions are tracked in [HANDOFF.md](HANDOFF.md).
+
 ## Region support
 
 Only **US915 sub-band 2** has been exercised. The config schema accepts other
