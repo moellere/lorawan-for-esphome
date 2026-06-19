@@ -133,9 +133,11 @@ generator come later, kept in lockstep with this byte layout.
 
 ## Next steps (ordered)
 
-1. **Make it compile.** `esphome compile example/spike-ttgo-lora32-v1.yaml`
-   (with a `secrets.yaml`). Fix RadioLib API mismatches against the pinned
-   version. This is the bulk of session one.
+1. ~~**Make it compile.**~~ Done — builds clean against RadioLib 7.2.1 +
+   ESPHome 2026.6.1, gated by CI (`.github/workflows/ci.yml` compiles the local
+   checkout via `tests/ci-compile.yaml`). Fixed: OTAA nonce-restore ordering,
+   the `activateOTAA` session return codes, the concrete-chip `begin()`, and the
+   Arduino SPI library dep.
 2. **Flash + join.** TTGO LoRa32 v1, real network, US915 sub-band 2. Register
    the device + keys on your server first (MAC version 1.0.4) and flush its
    nonces once.
@@ -143,9 +145,18 @@ generator come later, kept in lockstep with this byte layout.
    flush.
 4. **Resolve loop timing** if blocking is unacceptable (measure WiFi/API
    responsiveness first; only go second-core/async if needed).
-5. Then: SX1262 support, a compact payload codec, downlink handling, more
-   regions, and a CI `esphome compile` gate (the component must be fetchable
-   via `external_components` with a pinned ref).
+5. Then: SX1262 support, a compact payload codec, downlink handling, and more
+   regions.
+
+### Open considerations
+
+- **Per-device secrets scaling.** Keys live in a gitignored `lorawan-secrets.yaml`
+  merge-included from `secrets.yaml`, namespaced per device (`<node>_dev_eui`,
+  etc.; see README). This is fine for a handful of devices but gets unwieldy as
+  the fleet grows — the `<node>_` prefix is repeated by hand (substitutions can't
+  be used inside `!secret`), and one flat file holds every device's keys. If the
+  device count climbs, revisit: a generator that emits per-device configs +
+  secrets from a manifest (orchestrator's job), or a packages-based layout.
 
 ## Build / test
 

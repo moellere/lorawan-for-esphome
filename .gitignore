@@ -2,3 +2,4 @@ __pycache__/
 *.pyc
 .esphome/
 secrets.yaml
+lorawan-secrets.yaml

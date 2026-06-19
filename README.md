@@ -46,6 +46,38 @@ sensor:
 See [`example/spike-ttgo-lora32-v1.yaml`](example/spike-ttgo-lora32-v1.yaml)
 for a complete spike config.
 
+## Per-device keys
+
+`dev_eui` / `join_eui` / `app_key` are per-device registration secrets. ESPHome's
+`!secret` only reads a file named `secrets.yaml`, so to keep the LoRaWAN keys in
+their own file, merge-include it from the main one:
+
+```yaml
+# secrets.yaml
+<<: !include lorawan-secrets.yaml
+wifi_ssid: "..."
+wifi_password: "..."
+```
+
+```yaml
+# lorawan-secrets.yaml  (gitignored; namespace each device with a <node>_ prefix)
+kitchen_dev_eui:  "70b3d5..."
+kitchen_join_eui: "0000000000000000"
+kitchen_app_key:  "abcd...ef"
+```
+
+```yaml
+# kitchen.yaml
+lorawan:
+  dev_eui: !secret kitchen_dev_eui
+  join_eui: !secret kitchen_join_eui
+  app_key: !secret kitchen_app_key
+```
+
+Keys are MSB hex (matches the ChirpStack UI). Substitutions cannot be used inside
+`!secret`, so the `<node>_` prefix is spelled out per device. See
+[`example/lorawan-secrets.yaml.example`](example/lorawan-secrets.yaml.example).
+
 ## Payload encoding
 
 Each `sensor:` binding appends its current value as a little-endian `float32`,
