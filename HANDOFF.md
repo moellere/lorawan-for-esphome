@@ -143,12 +143,43 @@ generator come later, kept in lockstep with this byte layout.
    nonces once.
 3. **Verify nonce persistence** — power-cycle, confirm re-join with no server
    flush.
-4. **Resolve loop timing** if blocking is unacceptable (measure WiFi/API
-   responsiveness first; only go second-core/async if needed).
+4. **Resolve loop timing.** Largely retired by the deployment decision below:
+   field firmware runs with no WiFi/API, so the blocking RX windows have nothing
+   time-sensitive to stall (they only delay sensor polling by a couple seconds
+   per uplink). Second-core/async is only needed if WiFi is kept co-resident —
+   which the field profile does not.
 5. Then: SX1262 support, a compact payload codec, downlink handling, and more
    regions.
 
+## Deployment model (decided)
+
+Field firmware is **headless: no `wifi:`, no `api:`, no network `ota:`** — serial
+`logger:` only. Rationale: LoRaWAN nodes are usually out of WiFi range and on
+battery/solar, the keys are compile-time (`!secret`), and ESPHome's `wifi:`/`api:`
+both default to `reboot_timeout: 15min` — a configured-but-unreachable WiFi
+reboot-loops the device (and every reboot re-joins, burning a DevNonce). So
+build → flash → join → update are all **wired (USB serial)**; the join is observed
+on the serial log. WiFi only earns its keep on the bench.
+
 ### Open considerations
+
+- **Deep sleep (preferred direction).** Nodes are battery/solar, so deep sleep
+  between uplinks (µA idle) is the real power lever, bigger than dropping WiFi.
+  It changes the persistence model: deep sleep wipes RAM, so to avoid a full
+  re-join every wake (which burns a DevNonce and airtime each cycle) the
+  **session** must persist too, not just the nonces — RadioLib's
+  `getBufferSession`/`setBufferSession` alongside the nonce buffer we already
+  handle. Pairs with `deep_sleep:` + a timed wake on the uplink interval.
+
+- **WiFi-on-demand via downlink (future).** Keep field firmware LoRaWAN-only, but
+  let a Class-A *downlink* command flip on WiFi for maintenance: device receives a
+  downlink → enables WiFi (`wifi.enable`) → performs OTA → uplinks an
+  update-confirmation → receives a downlink to disable WiFi (`wifi.disable`) →
+  returns to LoRaWAN-only. Gives remote OTA without a permanent WiFi power/airtime
+  cost. Needs: downlink parsing/command dispatch, the WiFi enable/disable plumbing
+  (with `reboot_timeout: 0s` so the maintenance window doesn't reboot-loop), and a
+  server side that schedules the downlink + watches for the confirmation uplink
+  (orchestrator's half).
 
 - **Per-device secrets scaling.** Keys live in a gitignored `lorawan-secrets.yaml`
   merge-included from `secrets.yaml`, namespaced per device (`<node>_dev_eui`,
