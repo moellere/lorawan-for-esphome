@@ -21,10 +21,13 @@ this is a real contribution, not a duplicate.
 
 ## Status
 
-**Spike, not hardware-validated.** The scaffold compiles in intent but has
-**not been built against ESPHome or RadioLib yet** — treat the C++ as a first
-draft against a version-sensitive API (see *Known caveats*). The job of the
-first work session is to make it build and then join a real network.
+**Pre-alpha; compiles, not yet hardware-validated.** The component builds clean
+via `esphome compile` against RadioLib 7.2.1 + ESPHome 2026.6.1, gated by CI
+(`.github/workflows/ci.yml`). Every RadioLib call was verified against the pinned
+7.2.1 headers; the OTAA/nonce-restore path and the `activateOTAA` return codes are
+fixed. Remaining work is hardware-in-the-loop: the live OTAA join, uplink decode,
+and power-cycle nonce persistence (spike acceptance #2-#4) need a real TTGO LoRa32
+on the gateway.
 
 ## Reuse-first, and the WireStudio boundary
 
@@ -53,20 +56,25 @@ under ESPHome's cooperative loop.** LoRaWAN class-A opens receive windows at
 RX1 (+1 s) and RX2 (+2 s) after each uplink, and RadioLib's `sendReceive()`
 blocks through them. ESPHome's `loop()` is cooperative — a long block stalls
 WiFi, the API, and every other component. The current code blocks on purpose
-to stay minimal; proving a viable timing model is the spike.
+to stay minimal; proving a viable timing model is the spike. **Update:** the
+headless deployment decision (no WiFi/API; see *Deployment model*) retires this
+for the shipped profile — there is nothing time-sensitive left in the loop to
+stall. It only resurfaces if WiFi is ever made co-resident.
 
 **Spike acceptance:**
 
-1. The component builds via `esphome compile` against the example config.
+1. ~~The component builds via `esphome compile`.~~ **Done** — CI-green.
 2. On a TTGO LoRa32 v1 (SX1276), it OTAA-joins a real LoRaWAN network
-   (US915, sub-band 2) and an uplink is received + decoded server-side.
-3. WiFi/API stay responsive during the uplink burst (or the radio is moved
-   off the main loop — second core / async — if blocking proves unacceptable).
+   (US915, sub-band 2) and an uplink is received + decoded server-side. *(pending hardware)*
+3. WiFi/API stay responsive during the uplink burst. **Reframed:** the field
+   profile is headless (no WiFi/API), so the blocking RX windows have nothing
+   time-sensitive to stall — this criterion only bites a WiFi-coresident build,
+   which we don't ship. *(see Deployment model)*
 4. A **power cycle re-joins without a server-side nonce flush** — i.e. the
-   DevNonce persistence works.
+   DevNonce persistence works. *(pending hardware)*
 
-If all four hold, the rest (config polish, SX1262, a compact payload codec,
-more regions) is mechanical.
+With #1 done and #3 reframed, the rest (config polish, SX1262, a compact payload
+codec, more regions) is mechanical once #2 and #4 are confirmed on hardware.
 
 ## Key LoRaWAN findings — do not relitigate
 
@@ -99,13 +107,22 @@ Established through prior research; treat as given.
 ```
 components/lorawan/
   __init__.py      # config schema (region, sub_band, EUIs/key, radio pins,
-                   # uplink_interval) + to_code; pins jgromes/RadioLib 7.2.1
+                   # uplink_interval) + to_code; pins jgromes/RadioLib 7.2.1,
+                   # declares the Arduino SPI library
   sensor.py        # sensor sub-platform: bind an ESPHome sensor as a payload field
   lorawan.h        # LoRaWANComponent: radio + LoRaWANNode, join/uplink, nonce pref
-  lorawan.cpp      # setup() inits radio + joins; loop() interval-uplinks;
-                   # nonces saved/restored via ESPPreferences
+  lorawan.cpp      # setup() inits radio (begin on concrete chip) + joins;
+                   # loop() interval-uplinks; nonces saved/restored via ESPPreferences
+codec/
+  decodeUplink.js  # reference ChirpStack codec (float32-LE, FIELDS in lockstep)
 example/
-  spike-ttgo-lora32-v1.yaml   # SX1276 spike config (keys via !secret)
+  spike-ttgo-lora32-v1.yaml     # bench config: WiFi + SX1276, keys via !secret
+  field-headless.yaml           # production config: LoRaWAN-only, no WiFi/api/ota
+  lorawan-secrets.yaml.example  # per-device namespaced keys template
+tests/
+  ci-compile.yaml  # headless local-source config the CI gate compiles
+.github/workflows/
+  ci.yml           # esphome compile gate (pinned esphome), on push + PR
 README.md  LICENSE (MIT)  .gitignore  CLAUDE.md  HANDOFF.md (this file)
 ```
 
@@ -114,38 +131,107 @@ little-endian `float32` in declaration order. Deliberately trivial — a compact
 codec (scaling/ints/bitfields) and a matching server-side `decodeUplink`
 generator come later, kept in lockstep with this byte layout.
 
-## Known caveats in the scaffold (fix these first)
+## Known caveats
 
-- **RadioLib API is version-sensitive.** `beginOTAA` / `activateOTAA` /
-  `sendReceive` / `getBufferNonces` / `setBufferNonces` signatures and the
-  `RADIOLIB_*` / `US915` / `LoRaWANBand_t` symbols vary across RadioLib 6.x↔7.x.
-  The code targets 7.x but is unverified — expect to adjust against the pinned
-  version until `esphome compile` is clean. Pin one RadioLib version and build
-  to it.
-- **Blocking `loop()`** — see the spike goal. Acceptable for the spike;
-  resolve before "done."
-- **SPI ownership** — the component lets RadioLib drive SPI via raw pin
-  numbers rather than sharing ESPHome's `spi` bus. Fine for the spike; revisit
-  if it conflicts with other SPI devices on the board.
-- **SX1262 path is stubbed** — `init_radio_()` branches on chip but only
-  SX1276 is exercised. SX1262 needs `dio1` + `busy` (+ usually a TCXO voltage
-  and `dio2_as_rf_switch`); add those to the radio schema when you do it.
+- ~~**RadioLib API is version-sensitive / unverified.**~~ **Resolved.** Verified
+  against the pinned 7.2.1 headers and builds clean. Fixed: nonce-restore must
+  run after `beginOTAA` (which clears nonces) and `setBufferNonces` validates the
+  blob checksum against `keyCheckSum`; `activateOTAA` returns `NEW_SESSION` /
+  `SESSION_RESTORED` (both negative), not `ERR_NONE`; `begin()` is on the concrete
+  chip, not `PhysicalLayer`. Keep building to the pinned version.
+- **Blocking `loop()`** — retired for the shipped (headless) profile: with no
+  WiFi/API, the RX-window block only delays sensor polling by a couple seconds
+  per interval. Only revisit if a WiFi-coresident build is ever needed.
+- **SPI ownership** — the component lets RadioLib drive SPI via raw pin numbers
+  rather than sharing ESPHome's `spi` bus (and declares the Arduino SPI library
+  itself, since ESPHome skips it on ESP32). Fine as-is; revisit if it conflicts
+  with other SPI devices on the board.
+- **SX1262 path is stubbed** — `init_radio_()` branches on chip but only SX1276
+  is exercised. SX1262 needs `dio1` + `busy` (+ usually a TCXO voltage and
+  `dio2_as_rf_switch`); add those to the radio schema when you do it.
 
 ## Next steps (ordered)
 
-1. **Make it compile.** `esphome compile example/spike-ttgo-lora32-v1.yaml`
-   (with a `secrets.yaml`). Fix RadioLib API mismatches against the pinned
-   version. This is the bulk of session one.
+1. ~~**Make it compile.**~~ Done — builds clean against RadioLib 7.2.1 +
+   ESPHome 2026.6.1, gated by CI (`.github/workflows/ci.yml` compiles the local
+   checkout via `tests/ci-compile.yaml`). Fixed: OTAA nonce-restore ordering,
+   the `activateOTAA` session return codes, the concrete-chip `begin()`, and the
+   Arduino SPI library dep.
 2. **Flash + join.** TTGO LoRa32 v1, real network, US915 sub-band 2. Register
    the device + keys on your server first (MAC version 1.0.4) and flush its
    nonces once.
 3. **Verify nonce persistence** — power-cycle, confirm re-join with no server
    flush.
-4. **Resolve loop timing** if blocking is unacceptable (measure WiFi/API
-   responsiveness first; only go second-core/async if needed).
-5. Then: SX1262 support, a compact payload codec, downlink handling, more
-   regions, and a CI `esphome compile` gate (the component must be fetchable
-   via `external_components` with a pinned ref).
+4. **Resolve loop timing.** Largely retired by the deployment decision below:
+   field firmware runs with no WiFi/API, so the blocking RX windows have nothing
+   time-sensitive to stall (they only delay sensor polling by a couple seconds
+   per uplink). Second-core/async is only needed if WiFi is kept co-resident —
+   which the field profile does not.
+5. Then: SX1262 support, a compact payload codec, downlink handling, and more
+   regions.
+
+## Deployment model (decided)
+
+Field firmware is **headless: no `wifi:`, no `api:`, no network `ota:`** — serial
+`logger:` only. Rationale: LoRaWAN nodes are usually out of WiFi range and on
+battery/solar, the keys are compile-time (`!secret`), and ESPHome's `wifi:`/`api:`
+both default to `reboot_timeout: 15min` — a configured-but-unreachable WiFi
+reboot-loops the device (and every reboot re-joins, burning a DevNonce). So
+build → flash → join → update are all **wired (USB serial)**; the join is observed
+on the serial log. WiFi only earns its keep on the bench.
+
+### Open considerations
+
+- **Deep sleep (planned; preferred for battery/solar).** The real power lever.
+  It wipes RAM, so the model flips from an interval in `loop()` to a one-shot in
+  `setup()` then sleep, and the **session** must persist, not just the nonces:
+
+      setup(): init radio -> restore nonces+session -> activateOTAA()
+        SESSION_RESTORED -> resume at saved FCnt, no join airtime (steady state)
+        NEW_SESSION      -> first boot / session lost: joined fresh
+        error            -> backoff, sleep, retry next wake
+      read sensor(s) -> uplink (blocking RX) -> save nonces+session
+      radio_->sleep() -> global_preferences->sync() -> esp_deep_sleep_start()
+
+  RadioLib `getBufferSession`/`setBufferSession` (size
+  `RADIOLIB_LORAWAN_SESSION_BUF_SIZE`) hold DevAddr, session keys, and the frame
+  counters; FCntUp must stay monotonic across wakes or the server drops frames as
+  replays. Gotchas: (1) `ESPPreferences` batches writes — call
+  `global_preferences->sync()` before sleeping or the FCnt is lost; (2) sleep the
+  SX127x (`PhysicalLayer::sleep()`, virtual) separately from the ESP or it idles
+  at ~1.5 mA; (3) sensors update on their own interval — a one-shot must
+  force-read bound sensors and wait before packing the payload, or the first
+  cycle uplinks a stale/zero value. Config: `deep_sleep: true` (default false)
+  with the uplink interval as the sleep period. Independent of wifi-on-demand;
+  the only shared surface is that any Class-A downlink (incl. that feature)
+  arrives only in the RX window after a scheduled uplink — up-to-one-interval
+  latency.
+
+- **Board power floor (TTGO LoRa32 v1.6.1).** Even with deep sleep this board
+  does not reach µA: the AMS1117 LDO quiescent (~5-10 mA) and the power LED
+  (~1-3 mA) draw continuously regardless of CPU/radio state, so stock deep-sleep
+  current is single-digit mA. True low power needs a low-quiescent board or
+  hardware mods (bypass the LDO, lift the LED). Without deep sleep, idle between
+  uplinks is dominated by the always-active CPU at ~40-60 mA — order ~2 days on
+  an 18650, which is why deep sleep is the preferred direction.
+
+- **WiFi-on-demand via downlink (future).** Keep field firmware LoRaWAN-only, but
+  let a Class-A *downlink* command flip on WiFi for maintenance: device receives a
+  downlink → enables WiFi (`wifi.enable`) → performs OTA → uplinks an
+  update-confirmation → receives a downlink to disable WiFi (`wifi.disable`) →
+  returns to LoRaWAN-only. Gives remote OTA without a permanent WiFi power/airtime
+  cost. Needs: downlink parsing/command dispatch, the WiFi enable/disable plumbing
+  (with `reboot_timeout: 0s` so the maintenance window doesn't reboot-loop), and a
+  server side that schedules the downlink + watches for the confirmation uplink
+  (orchestrator's half).
+
+- **Per-device secrets scaling.** Keys live in a gitignored `lorawan-secrets.yaml`
+  merge-included from `secrets.yaml`, namespaced per device (`<node>_dev_eui`,
+  etc.; see README). This is fine for a handful of devices but gets unwieldy as
+  the fleet grows — the `<node>_` prefix is repeated by hand (substitutions can't
+  be used inside `!secret`), and one flat file holds every device's keys. If the
+  device count climbs, revisit: a generator that emits per-device configs +
+  secrets from a manifest (orchestrator's job), or a packages-based layout.
 
 ## Build / test
 

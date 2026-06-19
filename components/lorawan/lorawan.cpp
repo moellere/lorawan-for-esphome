@@ -27,14 +27,27 @@ void LoRaWANComponent::set_credentials(const std::string &join_eui, const std::s
 
 bool LoRaWANComponent::init_radio_() {
   Module *mod = new Module(this->cs_pin_, this->irq_pin_, this->rst_pin_, this->busy_pin_);
+  // begin() lives on the concrete radio, not PhysicalLayer, and its frequency
+  // args are placeholders -- LoRaWANNode reprograms the channel per uplink.
+  int16_t state;
   if (this->chip_ == "sx1276") {
-    this->radio_ = new SX1276(mod);
+    auto *radio = new SX1276(mod);
+    state = radio->begin();
+    this->radio_ = radio;
   } else if (this->chip_ == "sx1278") {
-    this->radio_ = new SX1278(mod);
+    auto *radio = new SX1278(mod);
+    state = radio->begin();
+    this->radio_ = radio;
   } else if (this->chip_ == "sx1262") {
-    this->radio_ = new SX1262(mod);
+    auto *radio = new SX1262(mod);
+    state = radio->begin();
+    this->radio_ = radio;
   } else {
     ESP_LOGE(TAG, "unknown radio chip '%s'", this->chip_.c_str());
+    return false;
+  }
+  if (state != RADIOLIB_ERR_NONE) {
+    ESP_LOGE(TAG, "radio begin failed: %d", state);
     return false;
   }
 
@@ -46,10 +59,11 @@ bool LoRaWANComponent::init_radio_() {
 }
 
 bool LoRaWANComponent::restore_nonces_() {
-  this->nonces_pref_ = global_preferences->make_preference<NoncesBlob>(fnv1_hash("lorawan_nonces"));
   NoncesBlob blob{};
   if (!this->nonces_pref_.load(&blob))
     return false;
+  // setBufferNonces validates the blob's checksum against keyCheckSum, which is
+  // only set by beginOTAA -- so this must run after beginOTAA, not before.
   return this->node_->setBufferNonces(blob.data) == RADIOLIB_ERR_NONE;
 }
 
@@ -61,11 +75,15 @@ void LoRaWANComponent::save_nonces_() {
 
 bool LoRaWANComponent::join_() {
   this->node_->beginOTAA(this->join_eui_, this->dev_eui_, nullptr, this->app_key_);
+  // beginOTAA calls clearNonces(); restore the persisted DevNonce afterwards so
+  // it stays monotonic across reboots, or the server drops the join silently.
+  this->restore_nonces_();
   // Blocks through the join RX windows. See the class comment in lorawan.h.
   int16_t state = this->node_->activateOTAA();
   this->save_nonces_();  // persist the new DevNonce regardless of outcome
-  if (state == RADIOLIB_LORAWAN_NEW_SESSION || state == RADIOLIB_ERR_NONE) {
-    ESP_LOGI(TAG, "OTAA join OK");
+  if (state == RADIOLIB_LORAWAN_NEW_SESSION || state == RADIOLIB_LORAWAN_SESSION_RESTORED) {
+    ESP_LOGI(TAG, "OTAA join OK (%s)",
+             state == RADIOLIB_LORAWAN_SESSION_RESTORED ? "restored" : "new session");
     return true;
   }
   ESP_LOGW(TAG, "OTAA join failed: %d", state);
@@ -92,13 +110,11 @@ void LoRaWANComponent::uplink_() {
 
 void LoRaWANComponent::setup() {
   ESP_LOGCONFIG(TAG, "setting up LoRaWAN...");
-  int16_t state = this->radio_ == nullptr && !this->init_radio_() ? RADIOLIB_ERR_UNKNOWN : this->radio_->begin();
-  if (state != RADIOLIB_ERR_NONE) {
-    ESP_LOGE(TAG, "radio begin failed: %d", state);
+  if (!this->init_radio_()) {
     this->mark_failed();
     return;
   }
-  this->restore_nonces_();  // best-effort; a fresh device just has none
+  this->nonces_pref_ = global_preferences->make_preference<NoncesBlob>(fnv1_hash("lorawan_nonces"));
   this->joined_ = this->join_();
   if (!this->joined_)
     this->status_set_warning();
