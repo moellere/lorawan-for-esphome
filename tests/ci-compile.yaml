@@ -1,0 +1,43 @@
+# CI-only config: compiles the lorawan component from the local checkout
+# (not the published github:// source) so every push is gated on a clean
+# `esphome compile`. Keys are placeholders from tests/secrets.yaml, written by
+# the workflow; this build never joins a network.
+esphome:
+  name: lorawan-ci
+
+esp32:
+  board: ttgo-lora32-v1
+  framework:
+    type: arduino
+
+logger:
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+    components: [lorawan]
+
+sensor:
+  - platform: adc
+    pin: GPIO36
+    name: "Battery"
+    id: battery
+    update_interval: 60s
+  - platform: lorawan
+    lorawan_id: lw
+    sensor: battery
+
+lorawan:
+  id: lw
+  region: US915
+  sub_band: 2
+  dev_eui: !secret dev_eui
+  join_eui: !secret join_eui
+  app_key: !secret app_key
+  uplink_interval: 5min
+  radio:
+    chip: sx1276
+    cs_pin: GPIO18
+    rst_pin: GPIO23
+    dio0_pin: GPIO26
