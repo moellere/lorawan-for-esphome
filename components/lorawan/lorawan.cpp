@@ -46,10 +46,11 @@ bool LoRaWANComponent::init_radio_() {
 }
 
 bool LoRaWANComponent::restore_nonces_() {
-  this->nonces_pref_ = global_preferences->make_preference<NoncesBlob>(fnv1_hash("lorawan_nonces"));
   NoncesBlob blob{};
   if (!this->nonces_pref_.load(&blob))
     return false;
+  // setBufferNonces validates the blob's checksum against keyCheckSum, which is
+  // only set by beginOTAA -- so this must run after beginOTAA, not before.
   return this->node_->setBufferNonces(blob.data) == RADIOLIB_ERR_NONE;
 }
 
@@ -61,11 +62,15 @@ void LoRaWANComponent::save_nonces_() {
 
 bool LoRaWANComponent::join_() {
   this->node_->beginOTAA(this->join_eui_, this->dev_eui_, nullptr, this->app_key_);
+  // beginOTAA calls clearNonces(); restore the persisted DevNonce afterwards so
+  // it stays monotonic across reboots, or the server drops the join silently.
+  this->restore_nonces_();
   // Blocks through the join RX windows. See the class comment in lorawan.h.
   int16_t state = this->node_->activateOTAA();
   this->save_nonces_();  // persist the new DevNonce regardless of outcome
-  if (state == RADIOLIB_LORAWAN_NEW_SESSION || state == RADIOLIB_ERR_NONE) {
-    ESP_LOGI(TAG, "OTAA join OK");
+  if (state == RADIOLIB_LORAWAN_NEW_SESSION || state == RADIOLIB_LORAWAN_SESSION_RESTORED) {
+    ESP_LOGI(TAG, "OTAA join OK (%s)",
+             state == RADIOLIB_LORAWAN_SESSION_RESTORED ? "restored" : "new session");
     return true;
   }
   ESP_LOGW(TAG, "OTAA join failed: %d", state);
@@ -98,7 +103,7 @@ void LoRaWANComponent::setup() {
     this->mark_failed();
     return;
   }
-  this->restore_nonces_();  // best-effort; a fresh device just has none
+  this->nonces_pref_ = global_preferences->make_preference<NoncesBlob>(fnv1_hash("lorawan_nonces"));
   this->joined_ = this->join_();
   if (!this->joined_)
     this->status_set_warning();
