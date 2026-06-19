@@ -1,0 +1,50 @@
+# Spike target: OTAA-join the live ChirpStack on a TTGO LoRa32 v1 (SX1276) and
+# uplink one field. Proves the RX-window timing integration before any of the
+# mechanical work (config polish, more radios, the payload codec) is built.
+#
+# Keys come from secrets.yaml; never commit them. Register the device in
+# ChirpStack first (MAC version 1.0.4, US915 sub-band 2) and flush its DevNonces.
+
+esphome:
+  name: lorawan-spike
+
+esp32:
+  board: ttgo-lora32-v1
+  framework:
+    type: arduino
+
+logger:
+  baud_rate: 115200
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+external_components:
+  - source: github://moellere/lorawan-for-esphome
+    components: [lorawan]
+
+# A real sensor so the spike uplinks something that moves. Swap for any sensor.
+sensor:
+  - platform: adc
+    pin: GPIO36
+    name: "Battery"
+    id: battery
+    update_interval: 60s
+  - platform: lorawan
+    lorawan_id: lw
+    sensor: battery
+
+lorawan:
+  id: lw
+  region: US915
+  sub_band: 2
+  dev_eui: !secret dev_eui
+  join_eui: !secret join_eui
+  app_key: !secret app_key
+  uplink_interval: 5min
+  radio:
+    chip: sx1276
+    cs_pin: GPIO18
+    rst_pin: GPIO23
+    dio0_pin: GPIO26
