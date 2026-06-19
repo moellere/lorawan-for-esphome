@@ -163,13 +163,38 @@ on the serial log. WiFi only earns its keep on the bench.
 
 ### Open considerations
 
-- **Deep sleep (preferred direction).** Nodes are battery/solar, so deep sleep
-  between uplinks (µA idle) is the real power lever, bigger than dropping WiFi.
-  It changes the persistence model: deep sleep wipes RAM, so to avoid a full
-  re-join every wake (which burns a DevNonce and airtime each cycle) the
-  **session** must persist too, not just the nonces — RadioLib's
-  `getBufferSession`/`setBufferSession` alongside the nonce buffer we already
-  handle. Pairs with `deep_sleep:` + a timed wake on the uplink interval.
+- **Deep sleep (planned; preferred for battery/solar).** The real power lever.
+  It wipes RAM, so the model flips from an interval in `loop()` to a one-shot in
+  `setup()` then sleep, and the **session** must persist, not just the nonces:
+
+      setup(): init radio -> restore nonces+session -> activateOTAA()
+        SESSION_RESTORED -> resume at saved FCnt, no join airtime (steady state)
+        NEW_SESSION      -> first boot / session lost: joined fresh
+        error            -> backoff, sleep, retry next wake
+      read sensor(s) -> uplink (blocking RX) -> save nonces+session
+      radio_->sleep() -> global_preferences->sync() -> esp_deep_sleep_start()
+
+  RadioLib `getBufferSession`/`setBufferSession` (size
+  `RADIOLIB_LORAWAN_SESSION_BUF_SIZE`) hold DevAddr, session keys, and the frame
+  counters; FCntUp must stay monotonic across wakes or the server drops frames as
+  replays. Gotchas: (1) `ESPPreferences` batches writes — call
+  `global_preferences->sync()` before sleeping or the FCnt is lost; (2) sleep the
+  SX127x (`PhysicalLayer::sleep()`, virtual) separately from the ESP or it idles
+  at ~1.5 mA; (3) sensors update on their own interval — a one-shot must
+  force-read bound sensors and wait before packing the payload, or the first
+  cycle uplinks a stale/zero value. Config: `deep_sleep: true` (default false)
+  with the uplink interval as the sleep period. Independent of wifi-on-demand;
+  the only shared surface is that any Class-A downlink (incl. that feature)
+  arrives only in the RX window after a scheduled uplink — up-to-one-interval
+  latency.
+
+- **Board power floor (TTGO LoRa32 v1.6.1).** Even with deep sleep this board
+  does not reach µA: the AMS1117 LDO quiescent (~5-10 mA) and the power LED
+  (~1-3 mA) draw continuously regardless of CPU/radio state, so stock deep-sleep
+  current is single-digit mA. True low power needs a low-quiescent board or
+  hardware mods (bypass the LDO, lift the LED). Without deep sleep, idle between
+  uplinks is dominated by the always-active CPU at ~40-60 mA — order ~2 days on
+  an 18650, which is why deep sleep is the preferred direction.
 
 - **WiFi-on-demand via downlink (future).** Keep field firmware LoRaWAN-only, but
   let a Class-A *downlink* command flip on WiFi for maintenance: device receives a
