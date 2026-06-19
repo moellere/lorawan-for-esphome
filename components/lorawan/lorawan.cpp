@@ -27,14 +27,27 @@ void LoRaWANComponent::set_credentials(const std::string &join_eui, const std::s
 
 bool LoRaWANComponent::init_radio_() {
   Module *mod = new Module(this->cs_pin_, this->irq_pin_, this->rst_pin_, this->busy_pin_);
+  // begin() lives on the concrete radio, not PhysicalLayer, and its frequency
+  // args are placeholders -- LoRaWANNode reprograms the channel per uplink.
+  int16_t state;
   if (this->chip_ == "sx1276") {
-    this->radio_ = new SX1276(mod);
+    auto *radio = new SX1276(mod);
+    state = radio->begin();
+    this->radio_ = radio;
   } else if (this->chip_ == "sx1278") {
-    this->radio_ = new SX1278(mod);
+    auto *radio = new SX1278(mod);
+    state = radio->begin();
+    this->radio_ = radio;
   } else if (this->chip_ == "sx1262") {
-    this->radio_ = new SX1262(mod);
+    auto *radio = new SX1262(mod);
+    state = radio->begin();
+    this->radio_ = radio;
   } else {
     ESP_LOGE(TAG, "unknown radio chip '%s'", this->chip_.c_str());
+    return false;
+  }
+  if (state != RADIOLIB_ERR_NONE) {
+    ESP_LOGE(TAG, "radio begin failed: %d", state);
     return false;
   }
 
@@ -97,9 +110,7 @@ void LoRaWANComponent::uplink_() {
 
 void LoRaWANComponent::setup() {
   ESP_LOGCONFIG(TAG, "setting up LoRaWAN...");
-  int16_t state = this->radio_ == nullptr && !this->init_radio_() ? RADIOLIB_ERR_UNKNOWN : this->radio_->begin();
-  if (state != RADIOLIB_ERR_NONE) {
-    ESP_LOGE(TAG, "radio begin failed: %d", state);
+  if (!this->init_radio_()) {
     this->mark_failed();
     return;
   }
