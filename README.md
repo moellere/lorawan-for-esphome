@@ -1,5 +1,7 @@
 # lorawan-for-esphome
 
+[![CI](https://github.com/moellere/lorawan-for-esphome/actions/workflows/ci.yml/badge.svg)](https://github.com/moellere/lorawan-for-esphome/actions/workflows/ci.yml)
+
 A LoRaWAN MAC component for [ESPHome](https://esphome.io). It joins a LoRaWAN
 network over OTAA and uplinks ESPHome sensor values, using
 [RadioLib](https://github.com/jgromes/RadioLib) for the radio + MAC and
@@ -9,18 +11,19 @@ ESPHome ships raw LoRa radio components (`sx126x`, `sx127x`) but no LoRaWAN
 MAC. This fills that gap so any ESPHome sensor platform can be the source of a
 LoRaWAN uplink — no per-sensor firmware code.
 
-> **Status: spike.** This is the minimal slice that proves the hard part —
-> joining a real network and surviving a power cycle without a server-side
-> nonce flush — works inside ESPHome's cooperative loop. It blocks in `loop()`
-> through the LoRaWAN RX windows on purpose; making that non-blocking (or
-> second-core) is the next step. Not yet hardware-validated. Pin a commit, not
+> **Status: pre-alpha.** Compiles cleanly (CI-gated) against RadioLib 7.2.1 +
+> ESPHome 2026.6.1, with the OTAA/nonce-persistence path verified against the
+> pinned RadioLib API. **Not yet hardware-validated** — the live OTAA join is
+> still pending. The field profile runs headless (no WiFi), which sidesteps the
+> RX-window/loop-timing concern: `loop()` blocks through the RX windows, but
+> with no WiFi/API there is nothing time-sensitive to stall. Pin a commit, not
 > `main`.
 
 ## Usage
 
 ```yaml
 external_components:
-  - source: github://moellere/lorawan-for-esphome
+  - source: github://moellere/lorawan-for-esphome@<commit-or-tag>  # pin, not main
     components: [lorawan]
 
 lorawan:
@@ -81,10 +84,11 @@ Keys are MSB hex (matches the ChirpStack UI). Substitutions cannot be used insid
 ## Payload encoding
 
 Each `sensor:` binding appends its current value as a little-endian `float32`,
-in declaration order. The matching ChirpStack `decodeUplink` codec is generated
-from the same ordered list (in the consuming project) so device and server stay
-in lockstep. The encoding is deliberately trivial for the spike; a compact
-codec (scaling, integers, bitfields) is a later refinement.
+in declaration order. A matching ChirpStack `decodeUplink` codec is in
+[`codec/decodeUplink.js`](codec/decodeUplink.js) — keep its `FIELDS` list in
+lockstep with the sensor bindings so device and server agree on the byte layout.
+The encoding is deliberately trivial for now; a compact codec (scaling, integers,
+bitfields) is a later refinement.
 
 ## Deployment
 
