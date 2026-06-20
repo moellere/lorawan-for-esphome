@@ -151,6 +151,9 @@ void LoRaWANComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "LoRaWAN:");
   ESP_LOGCONFIG(TAG, "  chip: %s", this->chip_.c_str());
   ESP_LOGCONFIG(TAG, "  region: %s  sub_band: %u", this->region_.c_str(), this->sub_band_);
+  ESP_LOGCONFIG(TAG, "  pins: cs=%d rst=%d dio/irq=%d busy=%d sck=%d miso=%d mosi=%d",
+                this->cs_pin_, this->rst_pin_, this->irq_pin_, this->busy_pin_,
+                this->sck_pin_, this->miso_pin_, this->mosi_pin_);
   ESP_LOGCONFIG(TAG, "  uplink_interval: %u ms", this->uplink_interval_ms_);
   ESP_LOGCONFIG(TAG, "  payload fields: %u", (unsigned) this->fields_.size());
 }
