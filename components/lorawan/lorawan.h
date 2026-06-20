@@ -35,6 +35,9 @@ class LoRaWANComponent : public Component {
     this->rst_pin_ = rst;
     this->busy_pin_ = busy;
   }
+  void set_sck_pin(int8_t pin) { this->sck_pin_ = pin; }
+  void set_miso_pin(int8_t pin) { this->miso_pin_ = pin; }
+  void set_mosi_pin(int8_t pin) { this->mosi_pin_ = pin; }
   void set_region(const std::string &region) { this->region_ = region; }
   void set_sub_band(uint8_t sub_band) { this->sub_band_ = sub_band; }
   void set_uplink_interval(uint32_t ms) { this->uplink_interval_ms_ = ms; }
@@ -56,6 +59,10 @@ class LoRaWANComponent : public Component {
   int irq_pin_{-1};
   int rst_pin_{-1};
   int busy_pin_{-1};
+  // SPI bus pins; -1 leaves RadioLib on the framework's default SPI pins.
+  int8_t sck_pin_{-1};
+  int8_t miso_pin_{-1};
+  int8_t mosi_pin_{-1};
   uint8_t sub_band_{2};
   uint32_t uplink_interval_ms_{300000};
   uint32_t last_uplink_{0};
