@@ -1,0 +1,63 @@
+# Multiple sensor values in one uplink. Shows the binding pattern: define real
+# sensors with ids, then add one `platform: lorawan` entry per value -- the order
+# of those entries is the byte order in the payload.
+#
+# Payload here: 2 x float32 LE = 8 bytes
+#   bytes 0-3: battery
+#   bytes 4-7: cpu_temp
+#
+# Matching ChirpStack decodeUplink (keep in lockstep -- see codec/decodeUplink.js):
+#   var FIELDS = ["battery", "cpu_temp"];
+#
+# 8 bytes fits even US915 DR0 (~11-byte app-payload cap). Add more fields only if
+# your data rate allows a larger payload -- see README "Payload encoding".
+
+esphome:
+  name: lorawan-multi
+
+esp32:
+  board: ttgo-lora32-v1
+  framework:
+    type: arduino
+
+logger:
+
+external_components:
+  - source: github://moellere/lorawan-for-esphome@main  # pin a commit for real use
+    components: [lorawan]
+
+sensor:
+  # Real sensors -- any ESPHome sensor platform works, including template/computed
+  # sensors. Each needs an id and should update at least as often as the uplink.
+  - platform: adc
+    pin: GPIO36
+    id: battery
+    update_interval: 60s
+  - platform: internal_temperature
+    id: cpu_temp
+    update_interval: 60s
+
+  # Bind each into the uplink, in payload order.
+  - platform: lorawan
+    lorawan_id: lw
+    sensor: battery
+  - platform: lorawan
+    lorawan_id: lw
+    sensor: cpu_temp
+
+lorawan:
+  id: lw
+  region: US915
+  sub_band: 2
+  dev_eui: !secret dev_eui
+  join_eui: !secret join_eui
+  app_key: !secret app_key
+  uplink_interval: 15min
+  radio:
+    chip: sx1276
+    cs_pin: GPIO18
+    rst_pin: GPIO23
+    dio0_pin: GPIO26
+    sck_pin: GPIO5
+    miso_pin: GPIO19
+    mosi_pin: GPIO27
