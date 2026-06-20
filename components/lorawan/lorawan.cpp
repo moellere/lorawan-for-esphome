@@ -3,11 +3,23 @@
 #include "esphome/core/hal.h"
 
 #include <SPI.h>
+#include <esp_task_wdt.h>
 
 namespace esphome {
 namespace lorawan {
 
 static const char *const TAG = "lorawan";
+
+namespace {
+// RadioLib's join and sendReceive block through the LoRaWAN RX windows (seconds,
+// and longer when no gateway answers) -- past the Task WDT period, which
+// otherwise reboot-loops the device mid-join. Detach the calling task from the
+// Task WDT for the duration of the blocking call, then re-attach.
+struct WdtPause {
+  WdtPause() { esp_task_wdt_delete(nullptr); }
+  ~WdtPause() { esp_task_wdt_add(nullptr); }
+};
+}  // namespace
 
 // RadioLib's nonce buffer is a fixed size; persist exactly that blob in NVS.
 struct NoncesBlob {
@@ -89,7 +101,11 @@ bool LoRaWANComponent::join_() {
   // it stays monotonic across reboots, or the server drops the join silently.
   this->restore_nonces_();
   // Blocks through the join RX windows. See the class comment in lorawan.h.
-  int16_t state = this->node_->activateOTAA();
+  int16_t state;
+  {
+    WdtPause wdt_pause;
+    state = this->node_->activateOTAA();
+  }
   this->save_nonces_();  // persist the new DevNonce regardless of outcome
   if (state == RADIOLIB_LORAWAN_NEW_SESSION || state == RADIOLIB_LORAWAN_SESSION_RESTORED) {
     ESP_LOGI(TAG, "OTAA join OK (%s)",
@@ -109,7 +125,11 @@ void LoRaWANComponent::uplink_() {
     payload.insert(payload.end(), b, b + 4);  // float32 little-endian, see codec
   }
   // Blocks through RX1/RX2 — the timing risk this spike exists to measure.
-  int16_t state = this->node_->sendReceive(payload.data(), payload.size(), 1);
+  int16_t state;
+  {
+    WdtPause wdt_pause;
+    state = this->node_->sendReceive(payload.data(), payload.size(), 1);
+  }
   this->save_nonces_();
   if (state < RADIOLIB_ERR_NONE) {
     ESP_LOGW(TAG, "uplink failed: %d", state);
