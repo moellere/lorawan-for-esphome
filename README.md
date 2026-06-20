@@ -90,6 +90,27 @@ lockstep with the sensor bindings so device and server agree on the byte layout.
 The encoding is deliberately trivial for now; a compact codec (scaling, integers,
 bitfields) is a later refinement.
 
+To send several values, bind each sensor in payload order — see
+[`example/multi-sensor.yaml`](example/multi-sensor.yaml):
+
+```yaml
+sensor:
+  - platform: adc          # a real sensor (any ESPHome sensor platform)
+    pin: GPIO36
+    id: battery
+  - platform: lorawan      # bind it into the uplink
+    lorawan_id: lw
+    sensor: battery
+```
+
+**Payload size vs data rate.** Each field is 4 bytes, and US915 at the slowest
+data rate (DR0/SF10) caps the application payload near **11 bytes** — so only
+**2** `float32` fields fit at DR0; more needs a higher DR (better link) or the
+frame is dropped. Values are read at uplink time, so keep each sensor's
+`update_interval` at or below `uplink_interval` (the first post-boot uplink may
+carry `NaN` if a slow sensor hasn't reported yet). Bindings take numeric
+`sensor::Sensor` values only.
+
 ## Deployment
 
 A field LoRaWAN node is usually out of WiFi range and on battery/solar, so the
