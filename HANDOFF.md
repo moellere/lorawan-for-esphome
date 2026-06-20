@@ -139,9 +139,16 @@ generator come later, kept in lockstep with this byte layout.
   blob checksum against `keyCheckSum`; `activateOTAA` returns `NEW_SESSION` /
   `SESSION_RESTORED` (both negative), not `ERR_NONE`; `begin()` is on the concrete
   chip, not `PhysicalLayer`. Keep building to the pinned version.
-- **Blocking `loop()`** — retired for the shipped (headless) profile: with no
-  WiFi/API, the RX-window block only delays sensor polling by a couple seconds
-  per interval. Only revisit if a WiFi-coresident build is ever needed.
+- **Blocking `loop()` / `setup()` + Task WDT.** Join and uplink block through the
+  RX windows (seconds; longer when no gateway answers). Headless removes the
+  WiFi/API stall, but **not** the ESP-IDF Task Watchdog — a multi-second block
+  on the loop task reboot-loops the device (observed on hardware: a join with no
+  gateway in range trips `task_wdt` ~10 s in). Handled by detaching the loop task
+  from the Task WDT around the blocking RadioLib calls (`WdtPause` in
+  `lorawan.cpp`). This makes the blocking model safe; the proper fix is still
+  async/off-loop radio (tracked with the deep-sleep work). Note `setup()` still
+  blocks ~one join attempt (~7 s) on boot when out of range before `loop()` takes
+  over retries.
 - **SPI ownership** — the component lets RadioLib drive SPI via raw pin numbers
   rather than sharing ESPHome's `spi` bus (and declares the Arduino SPI library
   itself, since ESPHome skips it on ESP32). Fine as-is; revisit if it conflicts
