@@ -36,6 +36,9 @@ lorawan:
   join_eui: !secret join_eui
   app_key: !secret app_key
   uplink_interval: 5min
+  on_downlink:
+    - lambda: |-
+        ESP_LOGI("app", "downlink fport=%u len=%u", port, payload.size());
   radio:
     chip: sx1276
     cs_pin: GPIO18

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "esphome/core/component.h"
+#include "esphome/core/automation.h"
 #include "esphome/core/preferences.h"
 #include "esphome/components/sensor/sensor.h"
 
@@ -11,6 +12,11 @@
 
 namespace esphome {
 namespace lorawan {
+
+// Fired for each application downlink received in an RX window, with the
+// downlink's fPort and raw payload bytes. Class A: downlinks only arrive in the
+// window after an uplink, so latency is up to one uplink_interval.
+class DownlinkTrigger : public Trigger<uint8_t, std::vector<uint8_t>> {};
 
 // Spike scope: OTAA join + periodic uplink of float32 sensor values on US915
 // sub-band 2, with DevNonce/session persistence in ESPHome's NVS-backed
@@ -45,6 +51,7 @@ class LoRaWANComponent : public Component {
                        const std::string &app_key);
 
   void add_payload_field(sensor::Sensor *s) { this->fields_.push_back(s); }
+  void add_on_downlink_trigger(DownlinkTrigger *t) { this->downlink_triggers_.push_back(t); }
 
  protected:
   bool init_radio_();
@@ -72,6 +79,7 @@ class LoRaWANComponent : public Component {
   uint8_t app_key_[16]{};
 
   std::vector<sensor::Sensor *> fields_;
+  std::vector<DownlinkTrigger *> downlink_triggers_;
 
   // RadioLib owns the module/node; allocated in init_radio_() once the chip is
   // known. PhysicalLayer is the common base of all supported radios.
