@@ -124,17 +124,31 @@ void LoRaWANComponent::uplink_() {
     uint8_t *b = reinterpret_cast<uint8_t *>(&v);
     payload.insert(payload.end(), b, b + 4);  // float32 little-endian, see codec
   }
-  // Blocks through RX1/RX2 — the timing risk this spike exists to measure.
+  // Capture any downlink that lands in RX1/RX2. lenDown is in/out: capacity in,
+  // actual out. Blocks through the RX windows — the timing risk this spike exists
+  // to measure.
+  uint8_t down[RADIOLIB_LORAWAN_MAX_DOWNLINK_SIZE];
+  size_t down_len = sizeof(down);
+  LoRaWANEvent_t down_event{};
   int16_t state;
   {
     WdtPause wdt_pause;
-    state = this->node_->sendReceive(payload.data(), payload.size(), 1);
+    state = this->node_->sendReceive(payload.data(), payload.size(), 1, down, &down_len, false,
+                                     nullptr, &down_event);
   }
   this->save_nonces_();
   if (state < RADIOLIB_ERR_NONE) {
     ESP_LOGW(TAG, "uplink failed: %d", state);
-  } else {
-    ESP_LOGD(TAG, "uplink sent (%u bytes)", (unsigned) payload.size());
+    return;
+  }
+  ESP_LOGD(TAG, "uplink sent (%u bytes)", (unsigned) payload.size());
+  // state is the RX window (1 or 2) when a downlink arrived, 0 when none.
+  if (state > 0 && down_len > 0) {
+    ESP_LOGD(TAG, "downlink fport=%u (%u bytes)%s", down_event.fPort, (unsigned) down_len,
+             down_event.frmPending ? ", more pending" : "");
+    std::vector<uint8_t> down_payload(down, down + down_len);
+    for (auto *t : this->downlink_triggers_)
+      t->trigger(down_event.fPort, down_payload);
   }
 }
 

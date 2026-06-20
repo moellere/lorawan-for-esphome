@@ -174,8 +174,9 @@ generator come later, kept in lockstep with this byte layout.
    time-sensitive to stall (they only delay sensor polling by a couple seconds
    per uplink). Second-core/async is only needed if WiFi is kept co-resident —
    which the field profile does not.
-5. Then: SX1262 support, a compact payload codec, downlink handling, and more
-   regions.
+5. Then: SX1262 support, a compact payload codec, and more regions. (Downlink
+   RX is done: application downlinks captured from the uplink's RX windows and
+   surfaced via the `on_downlink` automation trigger -- port + payload bytes.)
 
 ## Deployment model (decided)
 
