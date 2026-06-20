@@ -27,6 +27,9 @@ CONF_RST_PIN = "rst_pin"
 CONF_DIO0_PIN = "dio0_pin"
 CONF_DIO1_PIN = "dio1_pin"
 CONF_BUSY_PIN = "busy_pin"
+CONF_SCK_PIN = "sck_pin"
+CONF_MISO_PIN = "miso_pin"
+CONF_MOSI_PIN = "mosi_pin"
 
 # RadioLib module class names, keyed by the config value. The C++ side branches
 # on this string to construct the right module.
@@ -48,17 +51,27 @@ def _hex_of_len(nibbles):
     return validator
 
 
-RADIO_SCHEMA = cv.Schema(
-    {
-        cv.Required(CONF_CHIP): cv.one_of(*RADIO_CHIPS, lower=True),
-        cv.Required(CONF_CS_PIN): pins.internal_gpio_output_pin_number,
-        cv.Required(CONF_RST_PIN): pins.internal_gpio_output_pin_number,
-        # SX1276/78 use dio0; SX1262 uses dio1 + busy. The C++ side validates the
-        # combination against the chosen chip at setup; here both are optional.
-        cv.Optional(CONF_DIO0_PIN): pins.internal_gpio_input_pin_number,
-        cv.Optional(CONF_DIO1_PIN): pins.internal_gpio_input_pin_number,
-        cv.Optional(CONF_BUSY_PIN): pins.internal_gpio_input_pin_number,
-    }
+RADIO_SCHEMA = cv.All(
+    cv.Schema(
+        {
+            cv.Required(CONF_CHIP): cv.one_of(*RADIO_CHIPS, lower=True),
+            cv.Required(CONF_CS_PIN): pins.internal_gpio_output_pin_number,
+            cv.Required(CONF_RST_PIN): pins.internal_gpio_output_pin_number,
+            # SX1276/78 use dio0; SX1262 uses dio1 + busy. The C++ side validates
+            # the combination against the chosen chip at setup; both optional here.
+            cv.Optional(CONF_DIO0_PIN): pins.internal_gpio_input_pin_number,
+            cv.Optional(CONF_DIO1_PIN): pins.internal_gpio_input_pin_number,
+            cv.Optional(CONF_BUSY_PIN): pins.internal_gpio_input_pin_number,
+            # Explicit SPI bus pins. RadioLib otherwise defaults to the ESP32 VSPI
+            # pins (18/19/23/5), which match almost no LoRa board's wiring and
+            # surface as ERR_CHIP_NOT_FOUND. All three or none -- SPI.begin()
+            # needs the full set.
+            cv.Optional(CONF_SCK_PIN): pins.internal_gpio_output_pin_number,
+            cv.Optional(CONF_MISO_PIN): pins.internal_gpio_input_pin_number,
+            cv.Optional(CONF_MOSI_PIN): pins.internal_gpio_output_pin_number,
+        }
+    ),
+    cv.has_none_or_all_keys(CONF_SCK_PIN, CONF_MISO_PIN, CONF_MOSI_PIN),
 )
 
 CONFIG_SCHEMA = cv.Schema(
@@ -99,6 +112,10 @@ async def to_code(config):
             radio.get(CONF_BUSY_PIN, -1),
         )
     )
+    if CONF_SCK_PIN in radio:
+        cg.add(var.set_sck_pin(radio[CONF_SCK_PIN]))
+        cg.add(var.set_miso_pin(radio[CONF_MISO_PIN]))
+        cg.add(var.set_mosi_pin(radio[CONF_MOSI_PIN]))
     cg.add(var.set_region(config[CONF_REGION]))
     cg.add(var.set_sub_band(config[CONF_SUB_BAND]))
     cg.add(var.set_uplink_interval(config[CONF_UPLINK_INTERVAL]))

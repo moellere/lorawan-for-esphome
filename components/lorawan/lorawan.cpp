@@ -2,6 +2,8 @@
 #include "esphome/core/log.h"
 #include "esphome/core/hal.h"
 
+#include <SPI.h>
+
 namespace esphome {
 namespace lorawan {
 
@@ -26,6 +28,14 @@ void LoRaWANComponent::set_credentials(const std::string &join_eui, const std::s
 }
 
 bool LoRaWANComponent::init_radio_() {
+  // Bind the Arduino SPI bus to the configured pins before RadioLib constructs
+  // the Module. RadioLib otherwise defaults to arduino-esp32's VSPI pins
+  // (18/19/23/5), which match almost no LoRa board's radio wiring and surface as
+  // ERR_CHIP_NOT_FOUND. Only when all three were supplied (schema enforces that).
+  if (this->sck_pin_ >= 0) {
+    SPI.begin(this->sck_pin_, this->miso_pin_, this->mosi_pin_, this->cs_pin_);
+  }
+
   Module *mod = new Module(this->cs_pin_, this->irq_pin_, this->rst_pin_, this->busy_pin_);
   // begin() lives on the concrete radio, not PhysicalLayer, and its frequency
   // args are placeholders -- LoRaWANNode reprograms the channel per uplink.
