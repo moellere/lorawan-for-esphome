@@ -136,6 +136,32 @@ write the **app region only** to preserve the NVS-stored nonces (a full erase
 resets them). Future low-power (deep sleep) and remote-update (WiFi-on-demand via
 downlink) directions are tracked in [HANDOFF.md](HANDOFF.md).
 
+### Webflashing and per-device builds (local build)
+
+Because these devices have no WiFi/OTA, the fleet model is **local build**: the
+build host compiles a *per-device* binary with that device's keys baked in (the
+per-device `!secret` keys above are exactly this input), and a browser webflasher
+([ESP Web Tools](https://esphome.github.io/esp-web-tools/), WebSerial over USB)
+flashes it. The device half needs nothing beyond what's here — keys are
+compile-time and `esphome compile` emits a merged `firmware.factory.bin` plus a
+manifest for the webflasher. Building those and serving them is the orchestrator's
+job (server half), not this repo.
+
+The one device-half contract the webflasher must honor is the **NVS / DevNonce**
+rule (same as the wired "app region only" point above):
+
+- Flashing the firmware parts **without a full erase preserves NVS** → DevNonces
+  survive → a re-flash re-joins cleanly.
+- A full **"Erase device"** wipes NVS → DevNonces reset → the next join is
+  silently dropped unless paired with a **server-side nonce flush**.
+- First flash of a blank device: register it and flush nonces once; no erase
+  concern (NVS is empty anyway).
+
+So configure the webflasher to **not full-erase on re-flash** (preserve nonces),
+or flush server-side when you do. A shared-binary fleet (one image for many
+devices) is the alternative — it would need runtime key provisioning over serial,
+which is not implemented; local build avoids it.
+
 ## Region support
 
 Only **US915 sub-band 2** has been exercised. The config schema accepts other
