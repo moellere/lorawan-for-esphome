@@ -111,6 +111,33 @@ frame is dropped. Values are read at uplink time, so keep each sensor's
 carry `NaN` if a slow sensor hasn't reported yet). Bindings take numeric
 `sensor::Sensor` values only.
 
+## Receiving downlinks
+
+Each uplink opens the Class-A RX1/RX2 windows; an application downlink that lands
+there fires the `on_downlink` automation with the downlink's `port` (uint8) and
+`payload` (`std::vector<uint8_t>`):
+
+```yaml
+lorawan:
+  id: lw
+  # ...
+  on_downlink:
+    then:
+      - lambda: |-
+          ESP_LOGI("app", "downlink fport=%u len=%u", port, payload.size());
+          if (port == 10 && payload.size() == 1)
+            id(relay).turn_on();
+```
+
+The component stays generic — what a downlink *means* is yours to define in the
+handler (the mirror of the uplink codec, encoded server-side). MAC downlinks
+(ADR, link-check) are handled by RadioLib and don't reach the trigger.
+
+**Class-A latency.** A downlink can only be received in the window right after an
+uplink, so a server-queued downlink waits for the **next uplink** — up to one
+`uplink_interval` of latency (longer with deep sleep). Confirmed downlinks are
+auto-ACKed on the following uplink.
+
 ## Deployment
 
 A field LoRaWAN node is usually out of WiFi range and on battery/solar, so the

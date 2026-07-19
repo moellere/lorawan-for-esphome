@@ -1,7 +1,7 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
-from esphome import pins
-from esphome.const import CONF_ID
+from esphome import automation, pins
+from esphome.const import CONF_ID, CONF_TRIGGER_ID
 
 CODEOWNERS = ["@moellere"]
 # sensor bindings are an optional sub-platform; the component works without any.
@@ -10,9 +10,14 @@ MULTI_CONF = False
 
 lorawan_ns = cg.esphome_ns.namespace("lorawan")
 LoRaWANComponent = lorawan_ns.class_("LoRaWANComponent", cg.Component)
+DownlinkTrigger = lorawan_ns.class_(
+    "DownlinkTrigger",
+    automation.Trigger.template(cg.uint8, cg.std_vector.template(cg.uint8)),
+)
 
 # Used by the sensor sub-platform to reference the parent component.
 CONF_LORAWAN_ID = "lorawan_id"
+CONF_ON_DOWNLINK = "on_downlink"
 
 CONF_REGION = "region"
 CONF_SUB_BAND = "sub_band"
@@ -86,6 +91,9 @@ CONFIG_SCHEMA = cv.Schema(
             CONF_UPLINK_INTERVAL, default="5min"
         ): cv.positive_time_period_milliseconds,
         cv.Required(CONF_RADIO): RADIO_SCHEMA,
+        cv.Optional(CONF_ON_DOWNLINK): automation.validate_automation(
+            {cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(DownlinkTrigger)}
+        ),
     }
 ).extend(cv.COMPONENT_SCHEMA)
 
@@ -120,3 +128,12 @@ async def to_code(config):
     cg.add(var.set_sub_band(config[CONF_SUB_BAND]))
     cg.add(var.set_uplink_interval(config[CONF_UPLINK_INTERVAL]))
     cg.add(var.set_credentials(config[CONF_JOIN_EUI], config[CONF_DEV_EUI], config[CONF_APP_KEY]))
+
+    for conf in config.get(CONF_ON_DOWNLINK, []):
+        trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID])
+        cg.add(var.add_on_downlink_trigger(trigger))
+        await automation.build_automation(
+            trigger,
+            [(cg.uint8, "port"), (cg.std_vector.template(cg.uint8), "payload")],
+            conf,
+        )
