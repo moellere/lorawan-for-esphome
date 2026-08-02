@@ -19,6 +19,17 @@ struct WdtPause {
   WdtPause() { esp_task_wdt_delete(nullptr); }
   ~WdtPause() { esp_task_wdt_add(nullptr); }
 };
+
+// Lowest US915 data rate whose maximum application payload still fits `size`.
+// DR0 carries 11 bytes, DR1 53, DR2 125; DR3 and up carry more but cost range,
+// so this returns the slowest rate that works rather than the fastest.
+uint8_t min_datarate_for(size_t size) {
+  if (size <= 11)
+    return 0;
+  if (size <= 53)
+    return 1;
+  return 3;
+}
 }  // namespace
 
 // RadioLib's nonce buffer is a fixed size; persist exactly that blob in NVS.
@@ -153,6 +164,14 @@ void LoRaWANComponent::uplink_() {
     uint8_t *b = reinterpret_cast<uint8_t *>(&v);
     payload.insert(payload.end(), b, b + 4);  // float32 little-endian, see codec
   }
+  // Re-assert the data rate this payload needs, every time. ADR drives the
+  // rate down on a strong link, and US915 DR0 caps the application payload at
+  // 11 bytes -- so a 12-byte payload (three float32s) joins fine, uplinks once
+  // or twice, then fails with RADIOLIB_ERR_PACKET_TOO_LONG (-4) forever once
+  // the network has settled the rate. Setting it once after join is not enough
+  // because ADR lowers it again afterwards.
+  this->node_->setDatarate(min_datarate_for(payload.size()));
+
   // Capture any downlink that lands in RX1/RX2. lenDown is in/out: capacity in,
   // actual out. Blocks through the RX windows — the timing risk this spike exists
   // to measure.

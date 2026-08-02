@@ -26,15 +26,33 @@ external_components:
       path: ../components
     components: [lorawan]
 
+# Three payload fields on purpose: 3 x float32 = 12 bytes, one byte over the
+# 11-byte US915 DR0 limit. That is the shape that uplinks a couple of times and
+# then fails with -4 forever once ADR settles the rate down, so keep the
+# multi-field path compiled.
 sensor:
   - platform: adc
     pin: GPIO1
     name: "Battery"
     id: battery
     update_interval: 60s
+  - platform: template
+    name: "Second"
+    id: second_field
+    lambda: "return 1.0;"
+  - platform: template
+    name: "Third"
+    id: third_field
+    lambda: "return 2.0;"
   - platform: lorawan
     lorawan_id: lw
     sensor: battery
+  - platform: lorawan
+    lorawan_id: lw
+    sensor: second_field
+  - platform: lorawan
+    lorawan_id: lw
+    sensor: third_field
 
 lorawan:
   id: lw
