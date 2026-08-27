@@ -1,0 +1,68 @@
+# Heltec WiFi LoRa 32 V4 -- validated pin map (HIL session 2026-08-27).
+#
+# The V4 ships in two FEM revisions and this config drives the superset:
+#   V4.2 (GC1109):   GPIO7=VFEM LDO, GPIO2=CSD, GPIO46=CPS (full PA),
+#                    SX1262 DIO2 -> CTX (TX/RX select, automatic)
+#   V4.3 (KCT8103L): GPIO7=VFEM LDO, GPIO2=CSD, GPIO5=CTX (TX-PA / RX-bypass),
+#                    SX1262 DIO2 -> CPS (TX/RX select, automatic)
+# Plus VEXT (GPIO36, ACTIVE LOW) which powers the FEM/antenna path -- leaving
+# it undriven produces leakage-grade TX (about -52 dBm at 2 m from a 28 dBm
+# board) and can mask every other front-end mistake.
+#
+# Truth tables and sources: Meshtastic variants/esp32s3/heltec_v4/variant.h,
+# MeshCore PR #1249, RadioLib discussion #1665.
+esphome:
+  name: heltec-v4-node
+
+esp32:
+  board: heltec_wifi_lora_32_V3
+  framework:
+    type: arduino
+  variant: ESP32S3
+
+logger:
+  baud_rate: 115200
+
+external_components:
+  - source:
+      type: local
+      path: /home/moellere/repos/lorawan-for-esphome/components
+    components: [lorawan]
+
+sensor:
+  - platform: adc
+    pin: GPIO1
+    name: "Battery"
+    id: battery
+    update_interval: 60s
+  - platform: lorawan
+    lorawan_id: lw
+    sensor: battery
+
+lorawan:
+  id: lw
+  region: US915
+  sub_band: 2
+  dev_eui: !secret dev_eui   # per-device; see README "Per-device keys"
+  join_eui: !secret join_eui
+  app_key: !secret app_key
+  uplink_interval: 1min
+  radio:
+    chip: sx1262
+    cs_pin: GPIO8
+    rst_pin: GPIO12
+    dio1_pin: GPIO14
+    busy_pin: GPIO13
+    sck_pin: GPIO9
+    miso_pin: GPIO11
+    mosi_pin: GPIO10
+    tcxo_voltage: 1.8
+    dio2_as_rf_switch: true
+    # Full front-end drive, valid for both V4 FEM revisions:
+    #   GPIO7  VFEM LDO enable        GPIO2  FEM CSD (chip enable)
+    #   GPIO46 V4.2 CPS (full PA)     GPIO5  V4.3 CTX (TX-PA / RX-bypass)
+    #   DIO2   TX/RX select (CTX on V4.2, CPS on V4.3) -- automatic
+    setup_high: [GPIO7, GPIO2, GPIO5, GPIO46]
+    # VEXT, ACTIVE LOW: powers the FEM/antenna path. This was the missing bit
+    # all along -- unpowered FEM = leakage-grade TX (-54 at 2 m) and deaf RX.
+    setup_low: [GPIO36]

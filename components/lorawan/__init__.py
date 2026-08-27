@@ -38,6 +38,7 @@ CONF_MOSI_PIN = "mosi_pin"
 CONF_TCXO_VOLTAGE = "tcxo_voltage"
 CONF_DIO2_AS_RF_SWITCH = "dio2_as_rf_switch"
 CONF_SETUP_HIGH = "setup_high"
+CONF_SETUP_LOW = "setup_low"
 
 # RadioLib module class names, keyed by the config value. The C++ side branches
 # on this string to construct the right module.
@@ -95,6 +96,9 @@ RADIO_SCHEMA = cv.All(
             cv.Optional(CONF_SETUP_HIGH): cv.ensure_list(
                 pins.internal_gpio_output_pin_number
             ),
+            cv.Optional(CONF_SETUP_LOW): cv.ensure_list(
+                pins.internal_gpio_output_pin_number
+            ),
         }
     ),
     cv.has_none_or_all_keys(CONF_SCK_PIN, CONF_MISO_PIN, CONF_MOSI_PIN),
@@ -150,6 +154,8 @@ async def to_code(config):
     cg.add(var.set_dio2_as_rf_switch(radio[CONF_DIO2_AS_RF_SWITCH]))
     for pin in radio.get(CONF_SETUP_HIGH, []):
         cg.add(var.add_setup_high_pin(pin))
+    for pin in radio.get(CONF_SETUP_LOW, []):
+        cg.add(var.add_setup_low_pin(pin))
     cg.add(var.set_region(config[CONF_REGION]))
     cg.add(var.set_sub_band(config[CONF_SUB_BAND]))
     cg.add(var.set_uplink_interval(config[CONF_UPLINK_INTERVAL]))

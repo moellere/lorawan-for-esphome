@@ -47,6 +47,7 @@ class LoRaWANComponent : public Component {
   void set_tcxo_voltage(float v) { this->tcxo_voltage_ = v; }
   void set_dio2_as_rf_switch(bool on) { this->dio2_as_rf_switch_ = on; }
   void add_setup_high_pin(int pin) { this->setup_high_pins_.push_back(pin); }
+  void add_setup_low_pin(int pin) { this->setup_low_pins_.push_back(pin); }
   void set_region(const std::string &region) { this->region_ = region; }
   void set_sub_band(uint8_t sub_band) { this->sub_band_ = sub_band; }
   void set_uplink_interval(uint32_t ms) { this->uplink_interval_ms_ = ms; }
@@ -79,6 +80,7 @@ class LoRaWANComponent : public Component {
   bool dio2_as_rf_switch_{false};
   // Front-end / PA enables asserted before the radio is touched.
   std::vector<int> setup_high_pins_;
+  std::vector<int> setup_low_pins_;
   uint8_t sub_band_{2};
   uint32_t uplink_interval_ms_{300000};
   uint32_t last_uplink_{0};

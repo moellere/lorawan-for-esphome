@@ -60,6 +60,15 @@ bool LoRaWANComponent::init_radio_() {
     digitalWrite(pin, HIGH);
     ESP_LOGD(TAG, "front-end pin %d driven high", pin);
   }
+  // Active-low rails (e.g. Heltec V4's VEXT on GPIO36, which powers the FEM /
+  // antenna path): an undriven VEXT leaves the front end unpowered -- TX still
+  // "works" as leakage at desk range while RX is completely deaf, which is an
+  // expensive failure to see from the device side.
+  for (int pin : this->setup_low_pins_) {
+    pinMode(pin, OUTPUT);
+    digitalWrite(pin, LOW);
+    ESP_LOGD(TAG, "front-end pin %d driven low", pin);
+  }
 
   // Bind the Arduino SPI bus to the configured pins before RadioLib constructs
   // the Module. RadioLib otherwise defaults to arduino-esp32's VSPI pins

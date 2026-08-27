@@ -157,6 +157,33 @@ generator come later, kept in lockstep with this byte layout.
   is exercised. SX1262 needs `dio1` + `busy` (+ usually a TCXO voltage and
   `dio2_as_rf_switch`); add those to the radio schema when you do it.
 
+## HIL findings — Heltec V4 on the Wyola workbench (2026-08-27)
+
+First hardware session against the real gateway (SLOT28 on wyola-workbench,
+ChirpStack device `8cfd49fffeb55758` "Heltec WiFi LoRa 32 V4 GNSS"). Facts,
+each verified at the gateway side by decoding `us915_1/gateway/+/event/up`
+protobufs and reading ChirpStack's device DB:
+
+- **OTAA join-requests transmit and are ACCEPTED server-side** — 69+ burned
+  dev-nonces, dev_addr allocated, join-accepts transmitted (RX1 926.9 MHz
+  SF9/500k). The MIC/keys/registration are all correct.
+- **The device hears none of them.** With the original 4-pin `setup_high`
+  the join loop hung silently; with corrected FEM pins it fails fast and
+  clean with `RADIOLIB_ERR_NO_JOIN_ACCEPT (-1116)` every cycle.
+- **TX RSSI at the gateway (~2 m away) is -52 dBm** in every working pin
+  configuration — leakage-grade for a 28 dBm PA board. Driving VEXT low with
+  the TX-path pins floating dropped it to **-122** (powered FEM blocking an
+  unselected path), which proves the pins do reach the FEM.
+- **Prime suspect: antenna missing/unseated** (u.FL) — weak TX + total RX
+  deafness + insensitivity to front-end permutations all fit. Physical check
+  pending. The V4 also has a separate GNSS u.FL; easy to confuse.
+- Pin map for both V4 FEM revisions documented in
+  `example/heltec-v4-node.yaml`; `setup_low:` was added for VEXT-class
+  active-low rails.
+- Closed-loop iteration works end to end: `esphome compile` on the dev box,
+  flash over the workbench API (esptool to SLOT28), serial monitor with
+  pattern match, gateway-side RF decode. One cycle ≈ 4 minutes.
+
 ## Next steps (ordered)
 
 1. ~~**Make it compile.**~~ Done — builds clean against RadioLib 7.2.1 +
