@@ -159,27 +159,35 @@ bool LoRaWANComponent::join_() {
   if (state == RADIOLIB_LORAWAN_NEW_SESSION || state == RADIOLIB_LORAWAN_SESSION_RESTORED) {
     ESP_LOGI(TAG, "OTAA join OK (%s)",
              state == RADIOLIB_LORAWAN_SESSION_RESTORED ? "restored" : "new session");
+    if (this->device_class_ == "C") {
+      // LoRaWAN 1.0.x switches immediately; 1.1 queues DeviceModeInd on the
+      // next uplink. Either way RxC opens after the first post-join uplink.
+      int16_t cs = this->node_->setClass(RADIOLIB_LORAWAN_CLASS_C);
+      if (cs == RADIOLIB_ERR_NONE)
+        ESP_LOGI(TAG, "device class C enabled");
+      else
+        ESP_LOGW(TAG, "setClass(C) failed: %d", cs);
+    }
     return true;
   }
   ESP_LOGW(TAG, "OTAA join failed: %d", state);
   return false;
 }
 
-void LoRaWANComponent::uplink_() {
-  std::vector<uint8_t> payload;
-  payload.reserve(this->fields_.size() * 4);
-  for (auto *s : this->fields_) {
-    float v = s->state;
-    uint8_t *b = reinterpret_cast<uint8_t *>(&v);
-    payload.insert(payload.end(), b, b + 4);  // float32 little-endian, see codec
-  }
+void LoRaWANComponent::dispatch_downlink_(uint8_t f_port, const uint8_t *data, size_t len) {
+  std::vector<uint8_t> down_payload(data, data + len);
+  for (auto *t : this->downlink_triggers_)
+    t->trigger(f_port, down_payload);
+}
+
+bool LoRaWANComponent::transmit_(const uint8_t *data, size_t len, uint8_t f_port) {
   // Re-assert the data rate this payload needs, every time. ADR drives the
   // rate down on a strong link, and US915 DR0 caps the application payload at
   // 11 bytes -- so a 12-byte payload (three float32s) joins fine, uplinks once
   // or twice, then fails with RADIOLIB_ERR_PACKET_TOO_LONG (-4) forever once
   // the network has settled the rate. Setting it once after join is not enough
   // because ADR lowers it again afterwards.
-  this->node_->setDatarate(min_datarate_for(payload.size()));
+  this->node_->setDatarate(min_datarate_for(len));
 
   // Capture any downlink that lands in RX1/RX2. lenDown is in/out: capacity in,
   // actual out. Blocks through the RX windows — the timing risk this spike exists
@@ -190,22 +198,59 @@ void LoRaWANComponent::uplink_() {
   int16_t state;
   {
     WdtPause wdt_pause;
-    state = this->node_->sendReceive(payload.data(), payload.size(), 1, down, &down_len, false,
+    state = this->node_->sendReceive(data, len, f_port, down, &down_len, false,
                                      nullptr, &down_event);
   }
   this->save_nonces_();
   if (state < RADIOLIB_ERR_NONE) {
     ESP_LOGW(TAG, "uplink failed: %d", state);
-    return;
+    return false;
   }
-  ESP_LOGD(TAG, "uplink sent (%u bytes)", (unsigned) payload.size());
+  ESP_LOGD(TAG, "uplink sent (%u bytes, fport=%u)", (unsigned) len, f_port);
   // state is the RX window (1 or 2) when a downlink arrived, 0 when none.
   if (state > 0 && down_len > 0) {
     ESP_LOGD(TAG, "downlink fport=%u (%u bytes)%s", down_event.fPort, (unsigned) down_len,
              down_event.frmPending ? ", more pending" : "");
-    std::vector<uint8_t> down_payload(down, down + down_len);
-    for (auto *t : this->downlink_triggers_)
-      t->trigger(down_event.fPort, down_payload);
+    this->dispatch_downlink_(down_event.fPort, down, down_len);
+  }
+  return true;
+}
+
+void LoRaWANComponent::uplink_() {
+  std::vector<uint8_t> payload;
+  payload.reserve(this->fields_.size() * 4);
+  for (auto *s : this->fields_) {
+    float v = s->state;
+    uint8_t *b = reinterpret_cast<uint8_t *>(&v);
+    payload.insert(payload.end(), b, b + 4);  // float32 little-endian, see codec
+  }
+  this->transmit_(payload.data(), payload.size(), 1);
+}
+
+bool LoRaWANComponent::send_raw(uint8_t f_port, const std::vector<uint8_t> &payload) {
+  if (!this->joined_) {
+    ESP_LOGW(TAG, "send_raw dropped: not joined");
+    return false;
+  }
+  // An explicit send counts as the uplink for interval purposes, so the
+  // periodic sensor pack (if any) does not pile on right behind it.
+  this->last_uplink_ = millis();
+  return this->transmit_(payload.data(), payload.size(), f_port);
+}
+
+// Class C: RadioLib re-arms continuous RX after every uplink and latches
+// arriving frames from the radio IRQ; this poll just parses whatever latched.
+// Cheap when idle (a bool check), so it runs every loop() pass.
+void LoRaWANComponent::poll_class_c_() {
+  uint8_t down[RADIOLIB_LORAWAN_MAX_DOWNLINK_SIZE];
+  size_t down_len = sizeof(down);
+  LoRaWANEvent_t down_event{};
+  int16_t state = this->node_->getDownlinkClassC(down, &down_len, &down_event);
+  if (state > 0 && down_len > 0) {
+    ESP_LOGD(TAG, "class C downlink fport=%u (%u bytes)", down_event.fPort, (unsigned) down_len);
+    this->dispatch_downlink_(down_event.fPort, down, down_len);
+  } else if (state < RADIOLIB_ERR_NONE) {
+    ESP_LOGW(TAG, "class C receive failed: %d", state);
   }
 }
 
@@ -232,10 +277,15 @@ void LoRaWANComponent::loop() {
       this->status_clear_warning();
     return;
   }
+  if (this->device_class_ == "C")
+    this->poll_class_c_();
   if (millis() - this->last_uplink_ < this->uplink_interval_ms_)
     return;
   this->last_uplink_ = millis();
-  this->uplink_();
+  // No sensor fields configured means the payload is application-driven
+  // (lorawan.send_raw); don't emit empty periodic uplinks on top of it.
+  if (!this->fields_.empty())
+    this->uplink_();
 }
 
 void LoRaWANComponent::dump_config() {
@@ -245,6 +295,7 @@ void LoRaWANComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "  pins: cs=%d rst=%d dio/irq=%d busy=%d sck=%d miso=%d mosi=%d",
                 this->cs_pin_, this->rst_pin_, this->irq_pin_, this->busy_pin_,
                 this->sck_pin_, this->miso_pin_, this->mosi_pin_);
+  ESP_LOGCONFIG(TAG, "  device_class: %s", this->device_class_.c_str());
   ESP_LOGCONFIG(TAG, "  uplink_interval: %u ms", this->uplink_interval_ms_);
   ESP_LOGCONFIG(TAG, "  payload fields: %u", (unsigned) this->fields_.size());
 }

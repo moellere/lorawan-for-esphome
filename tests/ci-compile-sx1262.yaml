@@ -9,8 +9,29 @@
 # least keep the config surface from regressing.
 #
 # Keys are placeholders from tests/secrets.yaml; this build never joins.
+#
+# Also exercises the application-payload surface the SX1276 config leaves
+# alone: device_class C, lorawan.send_raw (literal + lambda payloads), and
+# on_downlink.
 esphome:
   name: lorawan-ci-sx1262
+
+interval:
+  - interval: 10min
+    then:
+      - lorawan.send_raw:
+          id: lw
+          f_port: 10
+          payload: [0x01, 0x02, 0x03]
+  - interval: 15min
+    then:
+      - lorawan.send_raw:
+          id: lw
+          f_port: !lambda "return 10;"
+          payload: !lambda |-
+            std::vector<uint8_t> p;
+            p.push_back(0x2a);
+            return p;
 
 esp32:
   board: heltec_wifi_lora_32_V3
@@ -62,6 +83,11 @@ lorawan:
   join_eui: !secret join_eui
   app_key: !secret app_key
   uplink_interval: 5min
+  # Continuous receive between uplinks; downlinks land in seconds.
+  device_class: C
+  on_downlink:
+    - lambda: |-
+        ESP_LOGD("ci", "downlink port=%u len=%u", port, (unsigned) payload.size());
   radio:
     chip: sx1262
     cs_pin: GPIO8

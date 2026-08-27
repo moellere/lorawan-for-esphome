@@ -54,8 +54,20 @@ class LoRaWANComponent : public Component {
   void set_credentials(const std::string &join_eui, const std::string &dev_eui,
                        const std::string &app_key);
 
+  void set_device_class(const std::string &cls) { this->device_class_ = cls; }
+
   void add_payload_field(sensor::Sensor *s) { this->fields_.push_back(s); }
   void add_on_downlink_trigger(DownlinkTrigger *t) { this->downlink_triggers_.push_back(t); }
+
+  // Send an arbitrary application payload right now, on the given fPort.
+  // This is the API for devices whose payload is not a float32 sensor pack
+  // (packed binary telemetry, protobufs, ...). Blocks through the Class A RX
+  // windows exactly like the periodic uplink, counts as *the* uplink for
+  // interval purposes, and feeds any downlink to on_downlink. Returns false
+  // when not joined or the radio rejected the send.
+  bool send_raw(uint8_t f_port, const std::vector<uint8_t> &payload);
+
+  bool is_joined() const { return this->joined_; }
 
  protected:
   bool init_radio_();
@@ -63,9 +75,18 @@ class LoRaWANComponent : public Component {
   void save_nonces_();
   bool join_();
   void uplink_();
+  bool transmit_(const uint8_t *data, size_t len, uint8_t f_port);
+  void dispatch_downlink_(uint8_t f_port, const uint8_t *data, size_t len);
+  void poll_class_c_();
 
   std::string chip_;
   std::string region_{"US915"};
+  // "A" (default) or "C". Class C keeps the receiver open between uplinks so
+  // downlinks arrive in seconds instead of waiting for the next uplink's RX
+  // window. RadioLib arms the continuous RxC window after the first uplink
+  // following the join, so a Class C device should keep a nonzero
+  // uplink_interval as its heartbeat.
+  std::string device_class_{"A"};
   int cs_pin_{-1};
   int irq_pin_{-1};
   int rst_pin_{-1};
@@ -99,6 +120,21 @@ class LoRaWANComponent : public Component {
   bool joined_{false};
 
   ESPPreferenceObject nonces_pref_;
+};
+
+// lorawan.send_raw action: fPort plus a templatable byte vector, so a lambda
+// can pack binary telemetry on the fly.
+template<typename... Ts> class SendRawAction : public Action<Ts...> {
+ public:
+  explicit SendRawAction(LoRaWANComponent *parent) : parent_(parent) {}
+  TEMPLATABLE_VALUE(uint8_t, f_port)
+  TEMPLATABLE_VALUE(std::vector<uint8_t>, payload)
+  void play(Ts... x) override {
+    this->parent_->send_raw(this->f_port_.value(x...), this->payload_.value(x...));
+  }
+
+ protected:
+  LoRaWANComponent *parent_;
 };
 
 }  // namespace lorawan

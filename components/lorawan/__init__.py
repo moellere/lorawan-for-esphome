@@ -15,9 +15,14 @@ DownlinkTrigger = lorawan_ns.class_(
     automation.Trigger.template(cg.uint8, cg.std_vector.template(cg.uint8)),
 )
 
+SendRawAction = lorawan_ns.class_("SendRawAction", automation.Action)
+
 # Used by the sensor sub-platform to reference the parent component.
 CONF_LORAWAN_ID = "lorawan_id"
 CONF_ON_DOWNLINK = "on_downlink"
+CONF_DEVICE_CLASS = "device_class"
+CONF_F_PORT = "f_port"
+CONF_PAYLOAD = "payload"
 
 CONF_REGION = "region"
 CONF_SUB_BAND = "sub_band"
@@ -115,6 +120,10 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(
             CONF_UPLINK_INTERVAL, default="5min"
         ): cv.positive_time_period_milliseconds,
+        # Class C keeps the receiver open between uplinks (mains/large-battery
+        # devices only): downlinks land in seconds instead of at the next
+        # uplink's RX window. Class B (beaconing) is not supported by RadioLib.
+        cv.Optional(CONF_DEVICE_CLASS, default="A"): cv.one_of("A", "C", upper=True),
         cv.Required(CONF_RADIO): RADIO_SCHEMA,
         cv.Optional(CONF_ON_DOWNLINK): automation.validate_automation(
             {cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(DownlinkTrigger)}
@@ -159,6 +168,7 @@ async def to_code(config):
     cg.add(var.set_region(config[CONF_REGION]))
     cg.add(var.set_sub_band(config[CONF_SUB_BAND]))
     cg.add(var.set_uplink_interval(config[CONF_UPLINK_INTERVAL]))
+    cg.add(var.set_device_class(config[CONF_DEVICE_CLASS]))
     cg.add(var.set_credentials(config[CONF_JOIN_EUI], config[CONF_DEV_EUI], config[CONF_APP_KEY]))
 
     for conf in config.get(CONF_ON_DOWNLINK, []):
@@ -169,3 +179,31 @@ async def to_code(config):
             [(cg.uint8, "port"), (cg.std_vector.template(cg.uint8), "payload")],
             conf,
         )
+
+
+SEND_RAW_SCHEMA = cv.Schema(
+    {
+        cv.GenerateID(): cv.use_id(LoRaWANComponent),
+        # fPort 0 is MAC-only and 224+ is reserved for test; application data
+        # lives in 1..223.
+        cv.Optional(CONF_F_PORT, default=1): cv.templatable(cv.int_range(min=1, max=223)),
+        # A literal list of bytes, or a lambda returning std::vector<uint8_t>
+        # (the usual case: pack binary telemetry on the fly).
+        cv.Required(CONF_PAYLOAD): cv.templatable(cv.ensure_list(cv.hex_uint8_t)),
+    }
+)
+
+
+@automation.register_action("lorawan.send_raw", SendRawAction, SEND_RAW_SCHEMA)
+async def send_raw_action_to_code(config, action_id, template_arg, args):
+    parent = await cg.get_variable(config[CONF_ID])
+    var = cg.new_Pvariable(action_id, template_arg, parent)
+    template_ = await cg.templatable(
+        config[CONF_F_PORT], args, cg.uint8
+    )
+    cg.add(var.set_f_port(template_))
+    template_ = await cg.templatable(
+        config[CONF_PAYLOAD], args, cg.std_vector.template(cg.uint8)
+    )
+    cg.add(var.set_payload(template_))
+    return var
