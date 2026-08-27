@@ -79,3 +79,5 @@ lorawan:
     # Front-end power, enable, CTX and PA-mode select. Undriven, the radio is
     # deaf and the failure is invisible from the device side.
     setup_high: [GPIO7, GPIO2, GPIO5, GPIO46]
+    # VEXT-class active-low rail (V4: GPIO36 powers the FEM/antenna path)
+    setup_low: [GPIO36]
