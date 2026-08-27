@@ -79,6 +79,14 @@ bool LoRaWANComponent::init_radio_() {
   }
 
   Module *mod = new Module(this->cs_pin_, this->irq_pin_, this->rst_pin_, this->busy_pin_);
+  // Per-transfer RF switching (PA/LNA enables). RadioLib owns these pins from
+  // here: idle LOW, txen HIGH only while transmitting, rxen HIGH only while
+  // receiving. A pin listed here must not also be in setup_high.
+  if (this->rxen_pin_ >= 0 || this->txen_pin_ >= 0) {
+    mod->setRfSwitchPins(this->rxen_pin_ >= 0 ? (uint32_t) this->rxen_pin_ : RADIOLIB_NC,
+                         this->txen_pin_ >= 0 ? (uint32_t) this->txen_pin_ : RADIOLIB_NC);
+    ESP_LOGD(TAG, "rf switch pins: rxen=%d txen=%d", this->rxen_pin_, this->txen_pin_);
+  }
   // begin() lives on the concrete radio, not PhysicalLayer, and its frequency
   // args are placeholders -- LoRaWANNode reprograms the channel per uplink.
   int16_t state;

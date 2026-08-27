@@ -102,8 +102,8 @@ lorawan:
     tcxo_voltage: 1.8
     # Antenna switch on DIO2 rather than a GPIO.
     dio2_as_rf_switch: true
-    # Front-end power, enable, CTX and PA-mode select. Undriven, the radio is
-    # deaf and the failure is invisible from the device side.
-    setup_high: [GPIO7, GPIO2, GPIO5, GPIO46]
-    # VEXT-class active-low rail (V4: GPIO36 powers the FEM/antenna path)
+    # Static front-end enables plus a per-transfer PA enable (txen_pin):
+    # RadioLib raises it during TX only. See example/heltec-v4-node.yaml.
+    setup_high: [GPIO7, GPIO2]
     setup_low: [GPIO36]
+    txen_pin: GPIO46

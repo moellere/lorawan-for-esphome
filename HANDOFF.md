@@ -278,6 +278,31 @@ esphome compile example/spike-ttgo-lora32-v1.yaml
 Conventions live in [`CLAUDE.md`](CLAUDE.md). Pin a commit when consuming this
 repo elsewhere — never `main`.
 
+## RESOLVED (2026-08-28): the V4 deafness was PA_TX_EN, not the antenna
+
+The user called it: the board RF'd fine under previous firmware, so hardware
+was never the suspect. Root cause -- **GPIO46 (GC1109 `PA_TX_EN`) is a
+per-transfer pin and every earlier config drove it statically**. Held high, the
+PA output stage stays engaged and the receiver is deaf: join-requests transmit
+(69 dev-nonces consumed server-side), join-accepts never arrive (-1116).
+Meshtastic's variant.h names the pins (`LORA_GC1109_PA_EN 2`,
+`LORA_GC1109_PA_TX_EN 46`) and MeshCore PR #1249 describes the same fix:
+give the pin to RadioLib's rf-switch handling so it toggles with TX/RX.
+
+The component now has `rxen_pin`/`txen_pin` (-> `Module::setRfSwitchPins`).
+Proven config: `setup_high: [GPIO7, GPIO2]`, `setup_low: [GPIO36]`,
+`txen_pin: GPIO46`, `dio2_as_rf_switch: true`. Bench result, closed loop:
+OTAA join OK (dev_addr allocated, f_cnt advancing), Class C enabled, and a
+queued downlink (fport 10) received and dispatched to `on_downlink`.
+
+Two quirks worth knowing:
+- The first join attempt after power-up consistently fails -1116; the retry
+  one uplink_interval later succeeds. Unexplained -- possibly FEM settle
+  after VEXT power-on. Harmless with the existing retry loop.
+- A Class A device profile server-side means downlinks ride the next uplink's
+  RX window even when the device runs Class C locally; immediate delivery
+  needs `supports_class_c` in the ChirpStack device profile too.
+
 ## Sources
 
 - ESPHome LoRaWAN tracking: https://github.com/esphome/feature-requests/issues/2634

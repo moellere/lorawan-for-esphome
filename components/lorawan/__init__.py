@@ -44,6 +44,8 @@ CONF_TCXO_VOLTAGE = "tcxo_voltage"
 CONF_DIO2_AS_RF_SWITCH = "dio2_as_rf_switch"
 CONF_SETUP_HIGH = "setup_high"
 CONF_SETUP_LOW = "setup_low"
+CONF_RXEN_PIN = "rxen_pin"
+CONF_TXEN_PIN = "txen_pin"
 
 # RadioLib module class names, keyed by the config value. The C++ side branches
 # on this string to construct the right module.
@@ -104,6 +106,12 @@ RADIO_SCHEMA = cv.All(
             cv.Optional(CONF_SETUP_LOW): cv.ensure_list(
                 pins.internal_gpio_output_pin_number
             ),
+            # PA/LNA enables RadioLib toggles per transfer (idle LOW, txen
+            # HIGH during TX, rxen HIGH during RX). For enables that must NOT
+            # be held statically: Heltec V4.2's GC1109 PA_TX_EN (GPIO46)
+            # pinned high leaves the PA engaged and the receiver deaf.
+            cv.Optional(CONF_RXEN_PIN): pins.internal_gpio_output_pin_number,
+            cv.Optional(CONF_TXEN_PIN): pins.internal_gpio_output_pin_number,
         }
     ),
     cv.has_none_or_all_keys(CONF_SCK_PIN, CONF_MISO_PIN, CONF_MOSI_PIN),
@@ -165,6 +173,8 @@ async def to_code(config):
         cg.add(var.add_setup_high_pin(pin))
     for pin in radio.get(CONF_SETUP_LOW, []):
         cg.add(var.add_setup_low_pin(pin))
+    if CONF_RXEN_PIN in radio or CONF_TXEN_PIN in radio:
+        cg.add(var.set_rf_switch_pins(radio.get(CONF_RXEN_PIN, -1), radio.get(CONF_TXEN_PIN, -1)))
     cg.add(var.set_region(config[CONF_REGION]))
     cg.add(var.set_sub_band(config[CONF_SUB_BAND]))
     cg.add(var.set_uplink_interval(config[CONF_UPLINK_INTERVAL]))

@@ -58,11 +58,17 @@ lorawan:
     mosi_pin: GPIO10
     tcxo_voltage: 1.8
     dio2_as_rf_switch: true
-    # Full front-end drive, valid for both V4 FEM revisions:
-    #   GPIO7  VFEM LDO enable        GPIO2  FEM CSD (chip enable)
-    #   GPIO46 V4.2 CPS (full PA)     GPIO5  V4.3 CTX (TX-PA / RX-bypass)
-    #   DIO2   TX/RX select (CTX on V4.2, CPS on V4.3) -- automatic
-    setup_high: [GPIO7, GPIO2, GPIO5, GPIO46]
-    # VEXT, ACTIVE LOW: powers the FEM/antenna path. This was the missing bit
-    # all along -- unpowered FEM = leakage-grade TX (-54 at 2 m) and deaf RX.
+    # BENCH-PROVEN V4 recipe (OTAA join + Class C downlink validated on the
+    # Wyola workbench, 2026-08-28):
+    #   static high:  GPIO7 (VFEM LDO), GPIO2 (FEM chip enable / CSD)
+    #   static low:   GPIO36 (VEXT, active low -- powers the FEM/antenna path)
+    #   per-transfer: GPIO46 (GC1109 PA_TX_EN) via txen_pin -- RadioLib raises
+    #                 it only while transmitting. Held statically high it pins
+    #                 the PA output stage on and the receiver is DEAF: joins
+    #                 transmit fine, join-accepts never arrive (-1116).
+    #   DIO2          TX/RX antenna select -- automatic (dio2_as_rf_switch)
+    # V4.3 (KCT8103L) note: TX select is CTX on GPIO5 -- if a V4.3 board stays
+    # deaf with this config, move txen_pin to GPIO5.
+    setup_high: [GPIO7, GPIO2]
     setup_low: [GPIO36]
+    txen_pin: GPIO46
