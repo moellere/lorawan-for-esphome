@@ -1,4 +1,5 @@
 #include "lorawan.h"
+#include "region_policy.h"
 #include "esphome/core/log.h"
 #include "esphome/core/hal.h"
 
@@ -130,9 +131,13 @@ bool LoRaWANComponent::init_radio_() {
     return false;
   }
 
-  // US915 is the only band exercised in the spike; the schema accepts others so
-  // this switch can grow without a config change.
-  const LoRaWANBand_t *band = &US915;
+  const LoRaWANBand_t *band = configured_band(this->region_);
+  if (band == nullptr)
+  {
+    ESP_LOGE(TAG, "unsupported LoRaWAN region: %s", this->region_.c_str());
+    return false;
+  }
+  ESP_LOGI(TAG, "actual RadioLib band: %s", this->region_.c_str());
   this->node_ = new LoRaWANNode(this->radio_, band, this->sub_band_);
   return true;
 }

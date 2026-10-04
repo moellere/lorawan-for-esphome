@@ -120,17 +120,14 @@ RADIO_SCHEMA = cv.All(
 CONFIG_SCHEMA = cv.Schema(
     {
         cv.GenerateID(): cv.declare_id(LoRaWANComponent),
-        cv.Optional(CONF_REGION, default="US915"): cv.one_of(*REGIONS, upper=True),
-        cv.Optional(CONF_SUB_BAND, default=2): cv.int_range(min=0, max=8),
+        cv.Optional(CONF_REGION, default="EU868"): cv.one_of(*REGIONS, upper=True),
+        cv.Optional(CONF_SUB_BAND, default=0): cv.int_range(min=0, max=8),
         cv.Required(CONF_DEV_EUI): _hex_of_len(16),
         cv.Required(CONF_JOIN_EUI): _hex_of_len(16),
         cv.Required(CONF_APP_KEY): _hex_of_len(32),
         cv.Optional(
             CONF_UPLINK_INTERVAL, default="5min"
         ): cv.positive_time_period_milliseconds,
-        # Class C keeps the receiver open between uplinks (mains/large-battery
-        # devices only): downlinks land in seconds instead of at the next
-        # uplink's RX window. Class B (beaconing) is not supported by RadioLib.
         cv.Optional(CONF_DEVICE_CLASS, default="A"): cv.one_of("A", "C", upper=True),
         cv.Required(CONF_RADIO): RADIO_SCHEMA,
         cv.Optional(CONF_ON_DOWNLINK): automation.validate_automation(
