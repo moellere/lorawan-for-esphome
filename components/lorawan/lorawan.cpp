@@ -87,30 +87,30 @@ bool LoRaWANComponent::init_radio_() {
                          this->txen_pin_ >= 0 ? (uint32_t) this->txen_pin_ : RADIOLIB_NC);
     ESP_LOGD(TAG, "rf switch pins: rxen=%d txen=%d", this->rxen_pin_, this->txen_pin_);
   }
-  // begin() lives on the concrete radio, not PhysicalLayer, and its frequency
-  // args are placeholders -- LoRaWANNode reprograms the channel per uplink.
+  // begin() lives on the concrete radio, not PhysicalLayer, and the config's
+  // modulation values are placeholders -- LoRaWANNode reprograms the channel
+  // per uplink, so RadioLib's defaults are left as they are.
+  ConfigLoRa_t cfg;
   int16_t state;
   if (this->chip_ == "sx1276") {
     auto *radio = new SX1276(mod);
-    state = radio->begin();
+    state = radio->begin(cfg);
     this->radio_ = radio;
   } else if (this->chip_ == "sx1278") {
     auto *radio = new SX1278(mod);
-    state = radio->begin();
+    state = radio->begin(cfg);
     this->radio_ = radio;
   } else if (this->chip_ == "sx1262") {
     auto *radio = new SX1262(mod);
-    // The TCXO voltage has to go in at begin(): the SX1262 powers its
+    // The TCXO voltage has to be set before begin(): the SX1262 powers its
     // oscillator from DIO3, and if that is wrong the chip never clocks and
     // begin() fails ERR_SPI_CMD_TIMEOUT, which reads like miswired SPI.
     // RadioLib's own default is 1.6 V, so only override when configured.
     if (this->tcxo_voltage_ >= 0.0f) {
-      state = radio->begin(434.0, 125.0, 9, 7, RADIOLIB_SX126X_SYNC_WORD_PRIVATE, 10, 8,
-                           this->tcxo_voltage_);
+      radio->tcxoVoltage = this->tcxo_voltage_;
       ESP_LOGD(TAG, "sx1262 begin with tcxo %.2fV", this->tcxo_voltage_);
-    } else {
-      state = radio->begin();
     }
+    state = radio->begin(cfg);
     if (state == RADIOLIB_ERR_NONE && this->dio2_as_rf_switch_) {
       // Antenna switch driven from DIO2 rather than a GPIO. Without this the
       // PA transmits into a switch stuck in receive.
@@ -197,11 +197,12 @@ bool LoRaWANComponent::transmit_(const uint8_t *data, size_t len, uint8_t f_port
   // because ADR lowers it again afterwards.
   this->node_->setDatarate(min_datarate_for(len));
 
-  // Capture any downlink that lands in RX1/RX2. lenDown is in/out: capacity in,
-  // actual out. Blocks through the RX windows — the timing risk this spike exists
-  // to measure.
-  uint8_t down[RADIOLIB_LORAWAN_MAX_DOWNLINK_SIZE];
-  size_t down_len = sizeof(down);
+  // Capture any downlink that lands in RX1/RX2. RadioLib ignores the incoming
+  // lenDown (it zeroes it) and writes up to MAX_PAYLOAD_SIZE bytes, so the
+  // buffer must be at least that. Blocks through the RX windows — the timing
+  // risk this spike exists to measure.
+  uint8_t down[RADIOLIB_LORAWAN_MAX_PAYLOAD_SIZE];
+  size_t down_len = 0;
   LoRaWANEvent_t down_event{};
   int16_t state;
   {
@@ -255,8 +256,8 @@ bool LoRaWANComponent::send_raw(uint8_t f_port, const std::vector<uint8_t> &payl
 // arriving frames from the radio IRQ; this poll just parses whatever latched.
 // Cheap when idle (a bool check), so it runs every loop() pass.
 void LoRaWANComponent::poll_class_c_() {
-  uint8_t down[RADIOLIB_LORAWAN_MAX_DOWNLINK_SIZE];
-  size_t down_len = sizeof(down);
+  uint8_t down[RADIOLIB_LORAWAN_MAX_PAYLOAD_SIZE];
+  size_t down_len = 0;
   LoRaWANEvent_t down_event{};
   int16_t state = this->node_->getDownlinkClassC(down, &down_len, &down_event);
   if (state > 0 && down_len > 0) {
@@ -273,7 +274,10 @@ void LoRaWANComponent::setup() {
     this->mark_failed();
     return;
   }
-  this->nonces_pref_ = global_preferences->make_preference<NoncesBlob>(fnv1_hash("lorawan_nonces"));
+  // Key carries RadioLib's nonce-buffer version (NONCES_VERSION_VAL). 7.7 dropped
+  // a byte from the layout, so a blob saved under an older RadioLib must never
+  // reach setBufferNonces; a new key makes the old one unreachable.
+  this->nonces_pref_ = global_preferences->make_preference<NoncesBlob>(fnv1_hash("lorawan_nonces_v3"));
   this->joined_ = this->join_();
   if (!this->joined_)
     this->status_set_warning();

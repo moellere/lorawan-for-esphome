@@ -11,7 +11,7 @@ ESPHome ships raw LoRa radio components (`sx126x`, `sx127x`) but no LoRaWAN
 MAC. This fills that gap so any ESPHome sensor platform can be the source of a
 LoRaWAN uplink — no per-sensor firmware code.
 
-> **Status: pre-alpha.** Compiles cleanly (CI-gated) against RadioLib 7.2.1 +
+> **Status: pre-alpha.** Compiles cleanly (CI-gated) against RadioLib 7.7.1 +
 > ESPHome 2026.6.1, with the OTAA/nonce-persistence path verified against the
 > pinned RadioLib API. **Not yet hardware-validated** — the live OTAA join is
 > still pending. The field profile runs headless (no WiFi), which sidesteps the
@@ -187,6 +187,9 @@ rule (same as the wired "app region only" point above):
   silently dropped unless paired with a **server-side nonce flush**.
 - First flash of a blank device: register it and flush nonces once; no erase
   concern (NVS is empty anyway).
+- A firmware that **changes RadioLib's nonce-buffer version** also resets the
+  DevNonces, even without an erase: the old blob is no longer readable. The
+  7.2.1 -> 7.7.1 bump is one; flush server-side once after flashing it.
 
 So configure the webflasher to **not full-erase on re-flash** (preserve nonces),
 or flush server-side when you do. A shared-binary fleet (one image for many
