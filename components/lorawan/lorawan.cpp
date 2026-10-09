@@ -87,30 +87,30 @@ bool LoRaWANComponent::init_radio_() {
                          this->txen_pin_ >= 0 ? (uint32_t) this->txen_pin_ : RADIOLIB_NC);
     ESP_LOGD(TAG, "rf switch pins: rxen=%d txen=%d", this->rxen_pin_, this->txen_pin_);
   }
-  // begin() lives on the concrete radio, not PhysicalLayer, and its frequency
-  // args are placeholders -- LoRaWANNode reprograms the channel per uplink.
+  // begin() lives on the concrete radio, not PhysicalLayer, and the config's
+  // modulation values are placeholders -- LoRaWANNode reprograms the channel
+  // per uplink, so RadioLib's defaults are left as they are.
+  ConfigLoRa_t cfg;
   int16_t state;
   if (this->chip_ == "sx1276") {
     auto *radio = new SX1276(mod);
-    state = radio->begin();
+    state = radio->begin(cfg);
     this->radio_ = radio;
   } else if (this->chip_ == "sx1278") {
     auto *radio = new SX1278(mod);
-    state = radio->begin();
+    state = radio->begin(cfg);
     this->radio_ = radio;
   } else if (this->chip_ == "sx1262") {
     auto *radio = new SX1262(mod);
-    // The TCXO voltage has to go in at begin(): the SX1262 powers its
+    // The TCXO voltage has to be set before begin(): the SX1262 powers its
     // oscillator from DIO3, and if that is wrong the chip never clocks and
     // begin() fails ERR_SPI_CMD_TIMEOUT, which reads like miswired SPI.
     // RadioLib's own default is 1.6 V, so only override when configured.
     if (this->tcxo_voltage_ >= 0.0f) {
-      state = radio->begin(434.0, 125.0, 9, 7, RADIOLIB_SX126X_SYNC_WORD_PRIVATE, 10, 8,
-                           this->tcxo_voltage_);
+      radio->tcxoVoltage = this->tcxo_voltage_;
       ESP_LOGD(TAG, "sx1262 begin with tcxo %.2fV", this->tcxo_voltage_);
-    } else {
-      state = radio->begin();
     }
+    state = radio->begin(cfg);
     if (state == RADIOLIB_ERR_NONE && this->dio2_as_rf_switch_) {
       // Antenna switch driven from DIO2 rather than a GPIO. Without this the
       // PA transmits into a switch stuck in receive.

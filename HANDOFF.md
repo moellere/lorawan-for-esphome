@@ -154,9 +154,11 @@ generator come later, kept in lockstep with this byte layout.
   - `RADIOLIB_LORAWAN_MAX_DOWNLINK_SIZE` (250) is gone; downlink buffers use
     `RADIOLIB_LORAWAN_MAX_PAYLOAD_SIZE` (242), what RadioLib itself sizes them
     to. `lenDown` is output-only in both versions (RadioLib zeroes it).
-  - 7.7.0 deprecated the positional `begin(freq, bw, ...)` overloads in favor
-    of `begin(const ConfigLoRa_t&)`; doc-comment only, no compiler warning.
-    They are removed in 8.0.0, so migrate before that bump.
+  - 7.7.0 deprecated the positional `begin(freq, bw, ...)` overloads (removed
+    in 8.0.0). Migrated to `begin(const ConfigLoRa_t&)` with RadioLib's
+    defaults, which match the old positional ones. Chip-specific knobs moved
+    off `begin()` onto public members read during it: the SX1262 TCXO voltage
+    is now `radio->tcxoVoltage`, set before `begin(cfg)`.
 - **Blocking `loop()` / `setup()` + Task WDT.** Join and uplink block through the
   RX windows (seconds; longer when no gateway answers). Headless removes the
   WiFi/API stall, but **not** the ESP-IDF Task Watchdog — a multi-second block
