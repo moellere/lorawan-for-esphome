@@ -143,7 +143,7 @@ CONFIG_SCHEMA = cv.Schema(
 async def to_code(config):
     # Upstream RadioLib first; fall back to an esphome-compile fork only if this
     # will not build (see docs/esphome-component-pivot.md, open question).
-    cg.add_library("jgromes/RadioLib", "7.2.1")
+    cg.add_library("jgromes/RadioLib", "7.7.1")
     # RadioLib's Module.h includes Arduino <SPI.h>. ESPHome's own spi component
     # skips that library on ESP32 (it uses the IDF SPI driver), so pull it in
     # explicitly or RadioLib won't find SPI.h.

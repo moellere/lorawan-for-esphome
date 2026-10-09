@@ -197,11 +197,12 @@ bool LoRaWANComponent::transmit_(const uint8_t *data, size_t len, uint8_t f_port
   // because ADR lowers it again afterwards.
   this->node_->setDatarate(min_datarate_for(len));
 
-  // Capture any downlink that lands in RX1/RX2. lenDown is in/out: capacity in,
-  // actual out. Blocks through the RX windows — the timing risk this spike exists
-  // to measure.
-  uint8_t down[RADIOLIB_LORAWAN_MAX_DOWNLINK_SIZE];
-  size_t down_len = sizeof(down);
+  // Capture any downlink that lands in RX1/RX2. RadioLib ignores the incoming
+  // lenDown (it zeroes it) and writes up to MAX_PAYLOAD_SIZE bytes, so the
+  // buffer must be at least that. Blocks through the RX windows — the timing
+  // risk this spike exists to measure.
+  uint8_t down[RADIOLIB_LORAWAN_MAX_PAYLOAD_SIZE];
+  size_t down_len = 0;
   LoRaWANEvent_t down_event{};
   int16_t state;
   {
@@ -255,8 +256,8 @@ bool LoRaWANComponent::send_raw(uint8_t f_port, const std::vector<uint8_t> &payl
 // arriving frames from the radio IRQ; this poll just parses whatever latched.
 // Cheap when idle (a bool check), so it runs every loop() pass.
 void LoRaWANComponent::poll_class_c_() {
-  uint8_t down[RADIOLIB_LORAWAN_MAX_DOWNLINK_SIZE];
-  size_t down_len = sizeof(down);
+  uint8_t down[RADIOLIB_LORAWAN_MAX_PAYLOAD_SIZE];
+  size_t down_len = 0;
   LoRaWANEvent_t down_event{};
   int16_t state = this->node_->getDownlinkClassC(down, &down_len, &down_event);
   if (state > 0 && down_len > 0) {
@@ -273,7 +274,10 @@ void LoRaWANComponent::setup() {
     this->mark_failed();
     return;
   }
-  this->nonces_pref_ = global_preferences->make_preference<NoncesBlob>(fnv1_hash("lorawan_nonces"));
+  // Key carries RadioLib's nonce-buffer version (NONCES_VERSION_VAL). 7.7 dropped
+  // a byte from the layout, so a blob saved under an older RadioLib must never
+  // reach setBufferNonces; a new key makes the old one unreachable.
+  this->nonces_pref_ = global_preferences->make_preference<NoncesBlob>(fnv1_hash("lorawan_nonces_v3"));
   this->joined_ = this->join_();
   if (!this->joined_)
     this->status_set_warning();

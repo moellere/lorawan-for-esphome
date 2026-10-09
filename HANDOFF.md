@@ -22,9 +22,9 @@ this is a real contribution, not a duplicate.
 ## Status
 
 **Pre-alpha; compiles, not yet hardware-validated.** The component builds clean
-via `esphome compile` against RadioLib 7.2.1 + ESPHome 2026.6.1, gated by CI
+via `esphome compile` against RadioLib 7.7.1 + ESPHome 2026.6.1, gated by CI
 (`.github/workflows/ci.yml`). Every RadioLib call was verified against the pinned
-7.2.1 headers; the OTAA/nonce-restore path and the `activateOTAA` return codes are
+7.7.1 headers; the OTAA/nonce-restore path and the `activateOTAA` return codes are
 fixed. Remaining work is hardware-in-the-loop: the live OTAA join, uplink decode,
 and power-cycle nonce persistence (spike acceptance #2-#4) need a real TTGO LoRa32
 on the gateway.
@@ -107,7 +107,7 @@ Established through prior research; treat as given.
 ```
 components/lorawan/
   __init__.py      # config schema (region, sub_band, EUIs/key, radio pins,
-                   # uplink_interval) + to_code; pins jgromes/RadioLib 7.2.1,
+                   # uplink_interval) + to_code; pins jgromes/RadioLib 7.7.1,
                    # declares the Arduino SPI library
   sensor.py        # sensor sub-platform: bind an ESPHome sensor as a payload field
   lorawan.h        # LoRaWANComponent: radio + LoRaWANNode, join/uplink, nonce pref
@@ -134,11 +134,29 @@ generator come later, kept in lockstep with this byte layout.
 ## Known caveats
 
 - ~~**RadioLib API is version-sensitive / unverified.**~~ **Resolved.** Verified
-  against the pinned 7.2.1 headers and builds clean. Fixed: nonce-restore must
+  against the pinned 7.7.1 headers and builds clean. Fixed: nonce-restore must
   run after `beginOTAA` (which clears nonces) and `setBufferNonces` validates the
   blob checksum against `keyCheckSum`; `activateOTAA` returns `NEW_SESSION` /
   `SESSION_RESTORED` (both negative), not `ERR_NONE`; `begin()` is on the concrete
   chip, not `PhysicalLayer`. Keep building to the pinned version.
+- **RadioLib 7.2.1 -> 7.7.1.** 7.2.1 carries GHSA-xj4h-672x-ggwj: `parseDownlink`
+  computes `payLen` as a `uint8_t` with no floor, so a short frame with a large
+  FOptsLen underflows it. Reachable pre-MIC by anyone who knows the DevAddr (it
+  is in clear on every uplink); before `verifyMIC` the underflowed value only
+  drives the FPort read past the heap buffer, after which the frame fails MIC.
+  Fixed in 7.7.0; 7.7.1 (#1792) frees the buffer on that new early return and
+  bounds the reserved-FPort package index (direct indexing introduced after
+  7.2.1, so not a 7.2.1 bug). Bump consequences:
+  - The nonce buffer lost its 1-byte `ACTIVE` field (17 -> 16 bytes,
+    `NONCES_VERSION_VAL` 2 -> 3). The NVS key is now `lorawan_nonces_v3`, so
+    every already-flashed device starts with fresh DevNonces once and needs a
+    one-time server-side nonce flush.
+  - `RADIOLIB_LORAWAN_MAX_DOWNLINK_SIZE` (250) is gone; downlink buffers use
+    `RADIOLIB_LORAWAN_MAX_PAYLOAD_SIZE` (242), what RadioLib itself sizes them
+    to. `lenDown` is output-only in both versions (RadioLib zeroes it).
+  - 7.7.0 deprecated the positional `begin(freq, bw, ...)` overloads in favor
+    of `begin(const ConfigLoRa_t&)`; doc-comment only, no compiler warning.
+    They are removed in 8.0.0, so migrate before that bump.
 - **Blocking `loop()` / `setup()` + Task WDT.** Join and uplink block through the
   RX windows (seconds; longer when no gateway answers). Headless removes the
   WiFi/API stall, but **not** the ESP-IDF Task Watchdog — a multi-second block
