@@ -163,12 +163,17 @@ generator come later, kept in lockstep with this byte layout.
   RX windows (seconds; longer when no gateway answers). Headless removes the
   WiFi/API stall, but **not** the ESP-IDF Task Watchdog — a multi-second block
   on the loop task reboot-loops the device (observed on hardware: a join with no
-  gateway in range trips `task_wdt` ~10 s in). Handled by detaching the loop task
-  from the Task WDT around the blocking RadioLib calls (`WdtPause` in
-  `lorawan.cpp`). This makes the blocking model safe; the proper fix is still
-  async/off-loop radio (tracked with the deep-sleep work). Note `setup()` still
-  blocks ~one join attempt (~7 s) on boot when out of range before `loop()` takes
-  over retries.
+  gateway in range trips `task_wdt` ~10 s in). Handled with RadioLib's
+  `setSleepFunction()`: every wait over 50 ms (the 5-6 s join-accept delays,
+  the 1-2 s RX delays, time-on-air, the open window) goes to
+  `radiolib_sleep()` in `lorawan.cpp`, which waits in 100 ms slices and feeds
+  the WDT between them. The loop task stays subscribed, so a genuine hang still
+  trips the watchdog -- unlike the earlier `WdtPause`, which detached the task
+  for the whole call. This makes the blocking model safe; it does not stop
+  ESPHome's other loop-driven components stalling for the duration. The proper
+  fix is still async/off-loop radio (tracked with the deep-sleep work). Note
+  `setup()` still blocks ~one join attempt (~7 s) on boot when out of range
+  before `loop()` takes over retries.
 - **SPI ownership** — the component lets RadioLib drive SPI via raw pin numbers
   rather than sharing ESPHome's `spi` bus (and declares the Arduino SPI library
   itself, since ESPHome skips it on ESP32). Fine as-is; revisit if it conflicts
