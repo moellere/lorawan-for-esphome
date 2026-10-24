@@ -12,12 +12,16 @@ MAC. This fills that gap so any ESPHome sensor platform can be the source of a
 LoRaWAN uplink — no per-sensor firmware code.
 
 > **Status: pre-alpha.** Compiles cleanly (CI-gated) against RadioLib 7.7.1 +
-> ESPHome 2026.6.1, with the OTAA/nonce-persistence path verified against the
-> pinned RadioLib API. **Not yet hardware-validated** — the live OTAA join is
-> still pending. The field profile runs headless (no WiFi), which sidesteps the
-> RX-window/loop-timing concern: `loop()` blocks through the RX windows, but
-> with no WiFi/API there is nothing time-sensitive to stall. Pin a commit, not
-> `main`.
+> ESPHome 2026.6.1. On hardware (Heltec V4 / SX1262, US915 sub-band 2) it has
+> OTAA-joined, uplinked with an advancing FCnt, and received a downlink through
+> `on_downlink` — but that run was on RadioLib 7.2.1 (see HANDOFF.md, *HIL
+> findings*). **Not yet re-run on hardware since the 7.7.1 bump**, and
+> power-cycle nonce persistence is still unverified. The field profile runs
+> headless (no WiFi), which sidesteps the RX-window/loop-timing concern:
+> `loop()` blocks through the RX windows, but with no WiFi/API there is nothing
+> time-sensitive to stall, and the ESP-IDF Task WDT is fed from RadioLib's
+> sleep callback through those waits, so they don't reboot the device. Pin a
+> commit, not `main`.
 
 ## Usage
 
