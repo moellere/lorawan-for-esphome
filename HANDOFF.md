@@ -21,7 +21,8 @@ this is a real contribution, not a duplicate.
 
 ## Status
 
-**Pre-alpha, tagged `v0.1.0`.** CI compiles three configs against RadioLib
+**Pre-alpha, tagged `v0.1.0`** (tag on ba7b756, GitHub release published).
+CI compiles three configs against RadioLib
 7.7.1 + ESPHome 2026.6.1 (SX1276 and SX1262 on Arduino, SX1262 on ESP-IDF) and
 round-trips the payload codec (`.github/workflows/ci.yml`).
 
@@ -41,10 +42,10 @@ Merged since, and **not yet run on hardware**:
 | #21 | EU868 and AU915 (untested, warned); uplink data rate taken from the band |
 | #22 | Typed, scaled payload fields (`type`, `multiplier`) |
 
-HIL briefs for these went to the homelab session on 2026-10-24 (main @
-bdc7cca for #17-#20, then d5754bd for #21-#22). Also still open on hardware: a
-true power pull (only a chip reset has been tested) and the TTGO LoRa32 /
-SX1276 path.
+#23 is docs plus `send_raw` registered `synchronous=True`; no behaviour
+change. The plan to validate all of it is *HIL plan — v0.1.0* below. Also
+still open on hardware: a true power pull (only a chip reset has been tested)
+and the TTGO LoRa32 / SX1276 path.
 
 ## Reuse-first, and the WireStudio boundary
 
@@ -216,16 +217,86 @@ decodes them with `codec/decodeUplink.js` in CI. Generating the codec's
 
 ## Next steps (ordered)
 
-1. **HIL the six merged PRs** (#17-#22) on the Heltec V4: radio task, session
-   resume, deep sleep, ESP-IDF, band-driven data rate, typed payload. Briefs
-   went out 2026-10-24; fold the findings into a new *HIL findings* section.
-2. **True power pull** — cut power right after an uplink, confirm the session
-   resumes with no join and FCnt does not go backwards.
-3. **TTGO LoRa32 v1 / SX1276** — first join on the SX127x path, US915 sub-band 2.
+1. **Run the *HIL plan — v0.1.0*** (below) on the Heltec V4. Write the results
+   up as *HIL findings — v0.1.0* in the shape of the ca52396 section, fix what
+   fails, and decide from test 4 whether the README needs a "framework switch
+   means a nonce flush" rule.
+2. **TTGO LoRa32 v1 / SX1276** — first join on the SX127x path, US915 sub-band 2.
    Register the device (MAC version 1.0.4) and flush its nonces once first.
-4. **EU868 / AU915 on a real gateway** of that plan; drop their untested
+3. **EU868 / AU915 on a real gateway** of that plan; drop their untested
    warning once each has joined.
-5. **Upstreaming** to ESPHome as an official component, once 1-3 pass.
+4. **Upstreaming** to ESPHome as an official component, once 1-2 pass.
+
+Loose ends from the session that produced v0.1.0:
+
+- A reply in the ESPHome Discord `#external-components` thread ("Why does it
+  need to block?") describes v0.1.0 and lists the bench run below as in
+  progress; it promises a follow-up with the results.
+- Workflow used so far: one PR per change from the working branch, squash-merged
+  once CI is green. After a squash merge, rebase follow-on local work with
+  `git rebase --onto origin/main <old-base>`, not a plain rebase, or the
+  squashed commits replay and conflict.
+- The cloud sessions could not run a full `esphome compile` (the PlatformIO
+  registry was blocked; CI was the compile gate) and could not push tags. A
+  session on the workbench VM has neither limit.
+
+## HIL plan — v0.1.0
+
+Heltec V4 in SLOT14 on the Wyola workbench, same harness as the 2026-10-24 run.
+Nothing below has run on hardware.
+
+**Build.** `external_components: source: github://moellere/lorawan-for-esphome@v0.1.0`
+(or the local checkout). Start from `example/heltec-v4-node.yaml`: SPI pins in
+the top-level `spi:` block (`clk_pin: GPIO9`, `miso_pin: GPIO11`, `mosi_pin:
+GPIO10`), `cs_pin` under `radio:`, and the proven radio block unchanged
+(`setup_high: [GPIO7, GPIO2]`, `setup_low: [GPIO36]`, `txen_pin: GPIO46`,
+`dio2_as_rf_switch: true`, `tcxo_voltage: 1.8`). Registered DevEUI
+`8cfd49fffeb55758`; failed-join case `8cfd49fffeb5dead`. Flash **without**
+erasing NVS. SLOT14 runs 137d06e (RadioLib 7.2.1), whose nonce blob 7.7.1
+cannot read, so flush DevNonces server-side once before the first flash.
+`uplink sent` / `downlink` log at DEBUG. Arduino, `uplink_interval: 1min`,
+Class A unless a test says otherwise.
+
+1. **Regression.** `sx1262 begin`, `OTAA join OK (new session)`, `uplink sent
+   (N bytes, fport=1) dev_eui=8cfd49fffeb55758` every 60 s; a queued fport 10
+   `[0a 0b 0c]` arrives as `downlink fport=10 (3 bytes)`.
+2. **Loop no longer blocks (#19).** No `took a long time for an operation`
+   (ca52396 logged 6623 ms per failed join, ~1.4 s per uplink). As
+   `…dead`: `OTAA join failed: -1116` each interval, no `task_wdt`, panic or
+   reset over at least 3 failures.
+3. **Session persistence (#17).** Record each `rst:0x..`.
+   a. Chip reset after a join and 2+ uplinks: `OTAA join OK (restored)`, no
+      join-request at the gateway, same DevAddr, `f_cnt_up` continues.
+   b. True power pull within ~10 s of an `uplink sent`: `restored`, same
+      DevAddr, FCnt not backwards.
+   c. Power pull after a fresh join, before the first uplink: `restored`.
+4. **ESP-IDF (#20).** Same YAML with `framework: type: esp-idf`, flashed over
+   the Arduino build without erasing. Record the first boot: `restored` means
+   IDF read the Arduino NVS; otherwise the join is silently rejected (`-1116`,
+   DevNonce reuse), so flush once and let it join. Then repeat 1 and 3a.
+5. **Deep sleep (#18).** `deep_sleep: {id: deep_sleep_1, sleep_duration: 2min}`
+   and `lorawan: deep_sleep_id: deep_sleep_1`. Per wake: `restored`, `uplink
+   sent`, sleep; one uplink per 2 min, FCnt +1 per wake, no join after the
+   first. A downlink queued between wakes lands in the next wake. As `…dead`:
+   `OTAA join failed` then `not joined; sleeping, the next wake retries the
+   join`, never stuck awake. Native-USB serial re-enumerates each wake.
+6. **Data rate (#21).** US915 payload limits DR0 11 B, DR1 53 B, DR2 125 B,
+   DR3 242 B. 4 bytes: DR0 every uplink, even after ADR, no `uplink failed:
+   -4`. 12 bytes (three `float32`): DR1. 60-byte `send_raw`: DR2 (the old
+   table picked DR3). Optional: an 11-byte payload goes DR1 on the uplink
+   after a LinkADRReq (FOpts). No untested-region warning on US915.
+7. **Compact payload (#22).** Bind battery `uint16` ×1000, a template
+   returning 21.37 as `int16` ×100, and a template returning `NAN` as
+   `uint8`. Boot log `payload: 3 fields, 5 bytes`; `frm_payload` = battery mV
+   LE, `59 08`, `ff`; DR0. Decode locally with `codec/decodeUplink.js`
+   (`tests/codec/check.js` shows how), not by editing the shared ChirpStack
+   device profile: expect `{battery: ~3.x, t: 21.37, n: null}`.
+8. **Class C on the radio task (optional).** `device_class: C`, no deep sleep:
+   after the first post-join uplink, a queued downlink arrives as `class C
+   downlink fport=10 (3 bytes)` within seconds.
+
+Afterwards restore SLOT14 to its gate firmware (137d06e), flushing nonces
+before the restore.
 
 ## Deployment model (decided)
 
