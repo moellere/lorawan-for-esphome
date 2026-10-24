@@ -16,13 +16,11 @@ LoRaWAN uplink — no per-sensor firmware code.
 > OTAA-joined, uplinked with an advancing FCnt, and received a downlink through
 > `on_downlink`, on RadioLib 7.2.1 (2026-08-28) and again on `main` @ ca52396
 > with RadioLib 7.7.1 and the Task WDT change (2026-10-24; see HANDOFF.md, *HIL
-> findings*). A true power-cycle nonce check is still pending. The field
-> profile runs headless (no WiFi), which sidesteps the RX-window/loop-timing
-> concern:
-> `loop()` blocks through the RX windows, but with no WiFi/API there is nothing
-> time-sensitive to stall, and the ESP-IDF Task WDT is fed from RadioLib's
-> sleep callback through those waits, so they don't reboot the device. Pin a
-> commit, not `main`.
+> findings*). A true power-cycle nonce check is still pending. RadioLib's
+> blocking join and uplinks run on their own FreeRTOS task, so ESPHome's loop
+> keeps running through the RX windows; that radio task has not yet run on
+> hardware. Give the radio its own SPI pins: nothing else may share its bus.
+> Pin a commit, not `main`.
 
 ## Usage
 

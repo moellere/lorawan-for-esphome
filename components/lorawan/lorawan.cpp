@@ -3,8 +3,6 @@
 #include "esphome/core/log.h"
 #include "esphome/core/hal.h"
 
-#include <algorithm>
-
 #include <SPI.h>
 
 namespace esphome {
@@ -13,21 +11,15 @@ namespace lorawan {
 static const char *const TAG = "lorawan";
 
 namespace {
-// RadioLib blocks through the RX windows (5-6 s to the join-accept windows,
-// 1-2 s on an uplink), past the 5 s Task WDT. Every wait over
-// RADIOLIB_LORAWAN_DELAY_SLEEP_THRESHOLD (50 ms) lands here instead of delay():
-// wait in slices, feeding the WDT between them, against a deadline so the total
-// stays within the 1 ms the window timing needs.
-void radiolib_sleep(RadioLibTime_t ms) {
-  const uint32_t end = millis() + ms;
-  for (;;) {
-    App.feed_wdt();
-    const int32_t left = (int32_t) (end - millis());
-    if (left <= 0)
-      return;
-    delay(std::min<int32_t>(left, 100));
-  }
-}
+// The radio task runs on the loop task's core, above it in priority, so
+// RadioLib's window timing wins whenever the two compete. RadioLib sleeps
+// (vTaskDelay) through the long RX delays, which is when loop() runs; what it
+// busy-waits on with yield() is bounded by one frame's airtime. The task is not
+// on the Task WDT, and loop() no longer blocks, so nothing needs feeding.
+constexpr uint32_t RADIO_TASK_STACK = 8192;
+constexpr UBaseType_t RADIO_TASK_PRIORITY = 3;  // loopTask runs at 1
+// Class C latches frames from the radio IRQ; polling the latch is cheap.
+constexpr uint32_t CLASS_C_POLL_MS = 50;
 
 // Lowest US915 data rate whose maximum application payload still fits `size`.
 // DR0 carries 11 bytes, DR1 53, DR2 125; DR3 and up carry more but cost range,
@@ -40,15 +32,6 @@ uint8_t min_datarate_for(size_t size) {
   return 3;
 }
 }  // namespace
-
-// RadioLib's nonce and session buffers are fixed size; persist exactly those
-// blobs in NVS.
-struct NoncesBlob {
-  uint8_t data[RADIOLIB_LORAWAN_NONCES_BUF_SIZE];
-};
-struct SessionBlob {
-  uint8_t data[RADIOLIB_LORAWAN_SESSION_BUF_SIZE];
-};
 
 static uint64_t parse_hex_u64(const std::string &hex) {
   return (uint64_t) strtoull(hex.c_str(), nullptr, 16);
@@ -147,7 +130,6 @@ bool LoRaWANComponent::init_radio_() {
   // its band (and its datarate table, see min_datarate_for) is added here.
   const LoRaWANBand_t *band = &US915;
   this->node_ = new LoRaWANNode(this->radio_, band, this->sub_band_);
-  this->node_->setSleepFunction(radiolib_sleep);
   return true;
 }
 
@@ -171,15 +153,12 @@ void LoRaWANComponent::restore_state_() {
     ESP_LOGD(TAG, "stored session not usable (%d), joining fresh", state);
 }
 
-void LoRaWANComponent::save_state_() {
-  NoncesBlob nonces{};
-  memcpy(nonces.data, this->node_->getBufferNonces(), sizeof(nonces.data));
-  this->nonces_pref_.save(&nonces);
-  if (this->node_->isActivated()) {
-    SessionBlob session{};
-    memcpy(session.data, this->node_->getBufferSession(), sizeof(session.data));
-    this->session_pref_.save(&session);
-  }
+void LoRaWANComponent::save_state_(const RadioResult &res) {
+  if (!res.has_state)
+    return;
+  this->nonces_pref_.save(&res.nonces);
+  if (res.has_session)
+    this->session_pref_.save(&res.session);
   // ESPHome only queues save() and writes NVS on the flash_write_interval
   // (60 s default). A power cut inside that window would bring back an old
   // DevNonce (join silently rejected) or an old FCnt (uplinks dropped as
@@ -187,74 +166,184 @@ void LoRaWANComponent::save_state_() {
   global_preferences->sync();
 }
 
-bool LoRaWANComponent::join_() {
-  this->node_->beginOTAA(this->join_eui_, this->dev_eui_, nullptr, this->app_key_);
-  // beginOTAA calls clearNonces(); restore the persisted DevNonce afterwards so
-  // it stays monotonic across reboots, or the server drops the join silently.
-  this->restore_state_();
-  // Blocks through the join RX windows. See the class comment in lorawan.h.
-  int16_t state = this->node_->activateOTAA();
-  this->save_state_();  // persist the new DevNonce regardless of outcome
-  if (state == RADIOLIB_LORAWAN_NEW_SESSION || state == RADIOLIB_LORAWAN_SESSION_RESTORED) {
-    ESP_LOGI(TAG, "OTAA join OK (%s)",
-             state == RADIOLIB_LORAWAN_SESSION_RESTORED ? "restored" : "new session");
-    if (this->device_class_ == "C") {
-      // LoRaWAN 1.0.x switches immediately; 1.1 queues DeviceModeInd on the
-      // next uplink. Either way RxC opens after the first post-join uplink.
-      int16_t cs = this->node_->setClass(RADIOLIB_LORAWAN_CLASS_C);
-      if (cs == RADIOLIB_ERR_NONE)
-        ESP_LOGI(TAG, "device class C enabled");
-      else
-        ESP_LOGW(TAG, "setClass(C) failed: %d", cs);
+// ---- radio task: the only code that touches node_/radio_ once it runs ----
+
+void LoRaWANComponent::radio_task_(void *arg) { static_cast<LoRaWANComponent *>(arg)->radio_task_loop_(); }
+
+void LoRaWANComponent::radio_task_loop_() {
+  RadioRequest req;
+  for (;;) {
+    TickType_t wait = this->class_c_active_ ? pdMS_TO_TICKS(CLASS_C_POLL_MS) : portMAX_DELAY;
+    if (xQueueReceive(this->requests_, &req, wait) == pdTRUE) {
+      this->task_result_ = RadioResult{};
+      if (req.kind == RadioRequest::JOIN) {
+        this->radio_join_(this->task_result_);
+      } else {
+        this->radio_uplink_(req, this->task_result_);
+      }
+      this->radio_snapshot_(this->task_result_);
+      xQueueSend(this->results_, &this->task_result_, portMAX_DELAY);
     }
-    return true;
+    if (this->class_c_active_) {
+      this->task_result_ = RadioResult{};
+      if (this->radio_poll_class_c_(this->task_result_))
+        xQueueSend(this->results_, &this->task_result_, portMAX_DELAY);
+    }
   }
-  ESP_LOGW(TAG, "OTAA join failed: %d", state);
-  return false;
 }
 
-void LoRaWANComponent::dispatch_downlink_(uint8_t f_port, const uint8_t *data, size_t len) {
-  std::vector<uint8_t> down_payload(data, data + len);
-  for (auto *t : this->downlink_triggers_)
-    t->trigger(f_port, down_payload);
+void LoRaWANComponent::radio_join_(RadioResult &res) {
+  // beginOTAA() and the NVS restore already ran in setup(). Calling
+  // activateOTAA() again after a failure is RadioLib's documented retry: the
+  // DevNonce it advanced in memory carries into the next attempt.
+  res.state = this->node_->activateOTAA();
+  if (res.state != RADIOLIB_LORAWAN_NEW_SESSION && res.state != RADIOLIB_LORAWAN_SESSION_RESTORED) {
+    res.kind = RadioResult::JOIN_FAILED;
+    return;
+  }
+  res.kind = RadioResult::JOINED;
+  if (this->device_class_ == "C") {
+    // LoRaWAN 1.0.x switches immediately; 1.1 queues DeviceModeInd on the
+    // next uplink. Either way RxC opens after the first post-join uplink.
+    res.class_state = this->node_->setClass(RADIOLIB_LORAWAN_CLASS_C);
+    this->class_c_active_ = res.class_state == RADIOLIB_ERR_NONE;
+  }
 }
 
-bool LoRaWANComponent::transmit_(const uint8_t *data, size_t len, uint8_t f_port) {
+void LoRaWANComponent::radio_uplink_(const RadioRequest &req, RadioResult &res) {
   // Re-assert the data rate this payload needs, every time. ADR drives the
   // rate down on a strong link, and US915 DR0 caps the application payload at
   // 11 bytes -- so a 12-byte payload (three float32s) joins fine, uplinks once
   // or twice, then fails with RADIOLIB_ERR_PACKET_TOO_LONG (-4) forever once
   // the network has settled the rate. Setting it once after join is not enough
   // because ADR lowers it again afterwards.
-  this->node_->setDatarate(min_datarate_for(len));
-
-  // Capture any downlink that lands in RX1/RX2. RadioLib ignores the incoming
-  // lenDown (it zeroes it) and writes up to MAX_PAYLOAD_SIZE bytes, so the
-  // buffer must be at least that. Blocks through the RX windows — the timing
-  // risk this spike exists to measure.
-  uint8_t down[RADIOLIB_LORAWAN_MAX_PAYLOAD_SIZE];
+  this->node_->setDatarate(min_datarate_for(req.len));
+  res.up_port = req.f_port;
+  res.up_len = req.len;
+  // RadioLib ignores the incoming lenDown (it zeroes it) and writes up to
+  // MAX_PAYLOAD_SIZE bytes, so the buffer must be at least that.
   size_t down_len = 0;
   LoRaWANEvent_t down_event{};
-  int16_t state = this->node_->sendReceive(data, len, f_port, down, &down_len, false,
-                                           nullptr, &down_event);
-  this->save_state_();
-  if (state < RADIOLIB_ERR_NONE) {
-    ESP_LOGW(TAG, "uplink failed: %d", state);
+  res.state = this->node_->sendReceive(req.data, req.len, req.f_port, res.down, &down_len, false,
+                                       nullptr, &down_event);
+  if (res.state < RADIOLIB_ERR_NONE) {
+    res.kind = RadioResult::UPLINK_FAILED;
+    return;
+  }
+  res.kind = RadioResult::UPLINK_SENT;
+  // state is the RX window (1 or 2) when a downlink arrived, 0 when none.
+  if (res.state > 0 && down_len > 0) {
+    res.down_port = down_event.fPort;
+    res.down_len = down_len;
+    res.frm_pending = down_event.frmPending;
+  }
+}
+
+// Class C: RadioLib re-arms continuous RX after every uplink and latches
+// arriving frames from the radio IRQ; this just parses whatever latched.
+bool LoRaWANComponent::radio_poll_class_c_(RadioResult &res) {
+  size_t down_len = 0;
+  LoRaWANEvent_t down_event{};
+  res.state = this->node_->getDownlinkClassC(res.down, &down_len, &down_event);
+  if (res.state > 0 && down_len > 0) {
+    res.kind = RadioResult::DOWNLINK;
+    res.down_port = down_event.fPort;
+    res.down_len = down_len;
+    return true;
+  }
+  if (res.state < RADIOLIB_ERR_NONE) {
+    res.kind = RadioResult::CLASS_C_FAILED;
+    return true;
+  }
+  return false;
+}
+
+void LoRaWANComponent::radio_snapshot_(RadioResult &res) {
+  memcpy(res.nonces.data, this->node_->getBufferNonces(), sizeof(res.nonces.data));
+  res.has_session = this->node_->isActivated();
+  if (res.has_session)
+    memcpy(res.session.data, this->node_->getBufferSession(), sizeof(res.session.data));
+  res.has_state = true;
+}
+
+// ---- main task ----
+
+bool LoRaWANComponent::request_(RadioRequest::Kind kind, uint8_t f_port, const uint8_t *data, size_t len) {
+  if (this->requests_ == nullptr)
+    return false;
+  RadioRequest req{};
+  if (len > sizeof(req.data)) {
+    ESP_LOGW(TAG, "payload of %u bytes exceeds the %u-byte maximum", (unsigned) len, (unsigned) sizeof(req.data));
     return false;
   }
-  // The DevEUI rides along because it is the only thing that identifies this
-  // board to the network server, and nothing else emits it after boot. A
-  // fleet tool reading a window of recent serial can then ask "who is in this
-  // slot" without power-cycling the board to catch dump_config.
-  ESP_LOGD(TAG, "uplink sent (%u bytes, fport=%u) dev_eui=%016llx",
-           (unsigned) len, f_port, (unsigned long long) this->dev_eui_);
-  // state is the RX window (1 or 2) when a downlink arrived, 0 when none.
-  if (state > 0 && down_len > 0) {
-    ESP_LOGD(TAG, "downlink fport=%u (%u bytes)%s", down_event.fPort, (unsigned) down_len,
-             down_event.frmPending ? ", more pending" : "");
-    this->dispatch_downlink_(down_event.fPort, down, down_len);
+  req.kind = kind;
+  req.f_port = f_port;
+  req.len = len;
+  if (len > 0)
+    memcpy(req.data, data, len);
+  if (xQueueSend(this->requests_, &req, 0) != pdTRUE) {
+    ESP_LOGW(TAG, "radio busy, request dropped");
+    return false;
   }
+  this->in_flight_++;
   return true;
+}
+
+void LoRaWANComponent::handle_result_(const RadioResult &res) {
+  switch (res.kind) {
+    case RadioResult::JOINED:
+      this->in_flight_--;
+      this->save_state_(res);
+      this->joined_ = true;
+      this->status_clear_warning();
+      ESP_LOGI(TAG, "OTAA join OK (%s)",
+               res.state == RADIOLIB_LORAWAN_SESSION_RESTORED ? "restored" : "new session");
+      if (this->device_class_ == "C") {
+        if (res.class_state == RADIOLIB_ERR_NONE)
+          ESP_LOGI(TAG, "device class C enabled");
+        else
+          ESP_LOGW(TAG, "setClass(C) failed: %d", res.class_state);
+      }
+      break;
+    case RadioResult::JOIN_FAILED:
+      this->in_flight_--;
+      this->save_state_(res);  // persist the advanced DevNonce regardless of outcome
+      ESP_LOGW(TAG, "OTAA join failed: %d", res.state);
+      break;
+    case RadioResult::UPLINK_SENT:
+      this->in_flight_--;
+      this->save_state_(res);
+      // The DevEUI rides along because it is the only thing that identifies
+      // this board to the network server, and nothing else emits it after
+      // boot. A fleet tool reading a window of recent serial can then ask "who
+      // is in this slot" without power-cycling the board to catch dump_config.
+      ESP_LOGD(TAG, "uplink sent (%u bytes, fport=%u) dev_eui=%016llx", (unsigned) res.up_len,
+               (unsigned) res.up_port, (unsigned long long) this->dev_eui_);
+      if (res.down_len > 0) {
+        ESP_LOGD(TAG, "downlink fport=%u (%u bytes)%s", (unsigned) res.down_port, (unsigned) res.down_len,
+                 res.frm_pending ? ", more pending" : "");
+        this->dispatch_downlink_(res.down_port, res.down, res.down_len);
+      }
+      break;
+    case RadioResult::UPLINK_FAILED:
+      this->in_flight_--;
+      this->save_state_(res);
+      ESP_LOGW(TAG, "uplink failed: %d", res.state);
+      break;
+    case RadioResult::DOWNLINK:
+      ESP_LOGD(TAG, "class C downlink fport=%u (%u bytes)", (unsigned) res.down_port, (unsigned) res.down_len);
+      this->dispatch_downlink_(res.down_port, res.down, res.down_len);
+      break;
+    case RadioResult::CLASS_C_FAILED:
+      ESP_LOGW(TAG, "class C receive failed: %d", res.state);
+      break;
+  }
+}
+
+void LoRaWANComponent::dispatch_downlink_(uint8_t f_port, const uint8_t *data, size_t len) {
+  std::vector<uint8_t> down_payload(data, data + len);
+  for (auto *t : this->downlink_triggers_)
+    t->trigger(f_port, down_payload);
 }
 
 void LoRaWANComponent::uplink_() {
@@ -265,7 +354,7 @@ void LoRaWANComponent::uplink_() {
     uint8_t *b = reinterpret_cast<uint8_t *>(&v);
     payload.insert(payload.end(), b, b + 4);  // float32 little-endian, see codec
   }
-  this->transmit_(payload.data(), payload.size(), 1);
+  this->request_(RadioRequest::UPLINK, 1, payload.data(), payload.size());
 }
 
 bool LoRaWANComponent::send_raw(uint8_t f_port, const std::vector<uint8_t> &payload) {
@@ -276,23 +365,7 @@ bool LoRaWANComponent::send_raw(uint8_t f_port, const std::vector<uint8_t> &payl
   // An explicit send counts as the uplink for interval purposes, so the
   // periodic sensor pack (if any) does not pile on right behind it.
   this->last_uplink_ = millis();
-  return this->transmit_(payload.data(), payload.size(), f_port);
-}
-
-// Class C: RadioLib re-arms continuous RX after every uplink and latches
-// arriving frames from the radio IRQ; this poll just parses whatever latched.
-// Cheap when idle (a bool check), so it runs every loop() pass.
-void LoRaWANComponent::poll_class_c_() {
-  uint8_t down[RADIOLIB_LORAWAN_MAX_PAYLOAD_SIZE];
-  size_t down_len = 0;
-  LoRaWANEvent_t down_event{};
-  int16_t state = this->node_->getDownlinkClassC(down, &down_len, &down_event);
-  if (state > 0 && down_len > 0) {
-    ESP_LOGD(TAG, "class C downlink fport=%u (%u bytes)", down_event.fPort, (unsigned) down_len);
-    this->dispatch_downlink_(down_event.fPort, down, down_len);
-  } else if (state < RADIOLIB_ERR_NONE) {
-    ESP_LOGW(TAG, "class C receive failed: %d", state);
-  }
+  return this->request_(RadioRequest::UPLINK, f_port, payload.data(), payload.size());
 }
 
 void LoRaWANComponent::setup() {
@@ -314,33 +387,57 @@ void LoRaWANComponent::setup() {
   // reach setBufferNonces; a new key makes the old one unreachable.
   this->nonces_pref_ = global_preferences->make_preference<NoncesBlob>(fnv1_hash("lorawan_nonces_v3"));
   this->session_pref_ = global_preferences->make_preference<SessionBlob>(fnv1_hash("lorawan_session"));
-  this->joined_ = this->join_();
-  if (!this->joined_)
-    this->status_set_warning();
+  this->node_->beginOTAA(this->join_eui_, this->dev_eui_, nullptr, this->app_key_);
+  // beginOTAA calls clearNonces(); restore the persisted DevNonce and session
+  // afterwards so the DevNonce stays monotonic across reboots (or the server
+  // drops the join silently) and a stored session resumes without a join.
+  // Done here, before the radio task exists, so NVS stays on the main task.
+  this->restore_state_();
+
+  this->requests_ = xQueueCreate(2, sizeof(RadioRequest));
+  this->results_ = xQueueCreate(4, sizeof(RadioResult));
+  if (this->requests_ == nullptr || this->results_ == nullptr ||
+      xTaskCreatePinnedToCore(LoRaWANComponent::radio_task_, "lorawan", RADIO_TASK_STACK, this,
+                              RADIO_TASK_PRIORITY, nullptr, xPortGetCoreID()) != pdPASS) {
+    ESP_LOGE(TAG, "could not start the radio task");
+    this->requests_ = nullptr;
+    this->results_ = nullptr;
+#ifdef USE_DEEP_SLEEP
+    if (this->deep_sleep_ != nullptr) {
+      this->status_set_error();  // loop() still runs and sleeps; see above
+      return;
+    }
+#endif
+    this->mark_failed();
+    return;
+  }
+  this->status_set_warning();  // cleared when the join lands
+  this->last_uplink_ = millis();
+  this->request_(RadioRequest::JOIN, 0, nullptr, 0);
 }
 
 void LoRaWANComponent::loop() {
+  if (this->results_ != nullptr) {
+    while (xQueueReceive(this->results_, &this->result_buf_, 0) == pdTRUE)
+      this->handle_result_(this->result_buf_);
+  }
 #ifdef USE_DEEP_SLEEP
   if (this->deep_sleep_ != nullptr) {
     this->deep_sleep_cycle_();
     return;
   }
 #endif
-  if (!this->joined_) {
-    // Retry join no more often than the uplink interval to respect duty cycle.
-    if (millis() - this->last_uplink_ < this->uplink_interval_ms_)
-      return;
-    this->last_uplink_ = millis();
-    this->joined_ = this->join_();
-    if (this->joined_)
-      this->status_clear_warning();
+  // One request on the radio at a time from here; send_raw may add one.
+  if (this->in_flight_ > 0)
     return;
-  }
-  if (this->device_class_ == "C")
-    this->poll_class_c_();
+  // Join retries and uplinks share the interval, which also respects duty cycle.
   if (millis() - this->last_uplink_ < this->uplink_interval_ms_)
     return;
   this->last_uplink_ = millis();
+  if (!this->joined_) {
+    this->request_(RadioRequest::JOIN, 0, nullptr, 0);
+    return;
+  }
   // No sensor fields configured means the payload is application-driven
   // (lorawan.send_raw); don't emit empty periodic uplinks on top of it.
   if (!this->fields_.empty())
@@ -348,17 +445,18 @@ void LoRaWANComponent::loop() {
 }
 
 #ifdef USE_DEEP_SLEEP
-// One uplink per wake. setup() already joined or resumed the stored session;
-// the uplink saves and syncs NVS, so all that is left is to wait for the bound
-// sensors and hand over to deep_sleep. A failed join just sleeps: the next
-// wake retries, which spaces join attempts by sleep_duration.
+// One uplink per wake. setup() queued the join (or the resume of the stored
+// session); results are handled above, NVS included. What is left is to wait
+// for the bound sensors, queue the one uplink, wait for it, and hand over to
+// deep_sleep. A failed join just sleeps: the next wake retries, which spaces
+// join attempts by sleep_duration.
 void LoRaWANComponent::deep_sleep_cycle_() {
-  if (this->cycle_done_)
+  if (this->cycle_done_ || this->in_flight_ > 0)
     return;
-  if (this->joined_) {
+  if (this->joined_ && !this->uplink_queued_) {
     // ESPHome runs a sensor's first poll within min(update_interval / 2, 5 s)
     // of its setup, plus conversion time, so 10 s from the first loop() pass
-    // covers ordinary sensors; a slower one is uplinked as NaN, logged.
+    // after the join covers ordinary sensors; a slower one is uplinked as NaN.
     static const uint32_t SENSOR_WAIT_MS = 10000;
     if (this->cycle_start_ == 0)
       this->cycle_start_ = millis();
@@ -369,17 +467,23 @@ void LoRaWANComponent::deep_sleep_cycle_() {
       return;
     if (!ready)
       ESP_LOGW(TAG, "uplinking before every bound sensor reported");
-    if (this->fields_.empty())
+    this->uplink_queued_ = true;
+    if (this->fields_.empty()) {
       ESP_LOGW(TAG, "deep sleep with no bound sensors: nothing to uplink this wake");
-    else
+    } else {
       this->uplink_();
-  } else {
+      if (this->in_flight_ > 0)
+        return;  // sleep once the uplink comes back
+    }
+  } else if (!this->joined_) {
     ESP_LOGW(TAG, "not joined; sleeping, the next wake retries the join");
   }
   this->cycle_done_ = true;
   // RadioLib leaves the radio in standby, which idles at ~1.5 mA through the
-  // whole sleep on an SX127x; the ESP's own deep sleep does not touch it. No
-  // node means begin() failed, and the radio may not answer SPI at all.
+  // whole sleep on an SX127x; the ESP's own deep sleep does not touch it. Safe
+  // from the main task here: nothing is in flight and Class C is rejected with
+  // deep sleep, so the radio task is parked on its queue. No node means begin()
+  // failed, and the radio may not answer SPI at all.
   if (this->node_ != nullptr)
     this->radio_->sleep();
   // Not manual: deep_sleep.prevent (e.g. a maintenance window) still holds the

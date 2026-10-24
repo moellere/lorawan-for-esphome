@@ -155,7 +155,7 @@ generator come later, kept in lockstep with this byte layout.
   Fixed in 7.7.0; 7.7.1 (#1792) frees the buffer on that new early return and
   bounds the reserved-FPort package index (direct indexing introduced after
   7.2.1, so not a 7.2.1 bug). Bump consequences:
-  - The nonce buffer lost its 1-byte `ACTIVE` field (17 -> 16 bytes,
+  - The nonce buffer lost its 1-byte `ACTIVE` field (15 -> 14 bytes,
     `NONCES_VERSION_VAL` 2 -> 3). The NVS key is now `lorawan_nonces_v3`, so
     every already-flashed device starts with fresh DevNonces once and needs a
     one-time server-side nonce flush.
@@ -167,25 +167,23 @@ generator come later, kept in lockstep with this byte layout.
     defaults, which match the old positional ones. Chip-specific knobs moved
     off `begin()` onto public members read during it: the SX1262 TCXO voltage
     is now `radio->tcxoVoltage`, set before `begin(cfg)`.
-- **Blocking `loop()` / `setup()` + Task WDT.** Join and uplink block through the
-  RX windows (seconds; longer when no gateway answers). Headless removes the
-  WiFi/API stall, but **not** the ESP-IDF Task Watchdog — a multi-second block
-  on the loop task reboot-loops the device (observed on hardware: a join with no
-  gateway in range trips `task_wdt` ~10 s in). Handled with RadioLib's
-  `setSleepFunction()`: every wait over 50 ms (the 5-6 s join-accept delays,
-  the 1-2 s RX delays, time-on-air, the open window) goes to
-  `radiolib_sleep()` in `lorawan.cpp`, which waits in 100 ms slices and feeds
-  the WDT between them. The loop task stays subscribed, so a genuine hang still
-  trips the watchdog -- unlike the earlier `WdtPause`, which detached the task
-  for the whole call. This makes the blocking model safe; it does not stop
-  ESPHome's other loop-driven components stalling for the duration. The proper
-  fix is still async/off-loop radio (tracked with the deep-sleep work). Note
-  `setup()` still blocks ~one join attempt (~7 s) on boot when out of range
-  before `loop()` takes over retries.
+- **Radio task (not yet run on hardware).** RadioLib's join and uplink block
+  through the RX windows (5-6 s on a join, 1-2 s on an uplink). That used to
+  run in `loop()`/`setup()`: it starved every other component and tripped the
+  Task WDT, first worked around by detaching the WDT (`WdtPause`), then by
+  feeding it from RadioLib's sleep callback (HIL-validated 2026-10-24). Now a
+  FreeRTOS task owns the radio: `loop()` queues join/uplink requests and
+  handles the results (logs, NVS, `on_downlink`) on the main task. The task
+  runs on the loop's core above it in priority; RadioLib sleeps through the
+  long RX delays (when `loop()` runs) and only busy-waits, with `yield()`, for
+  at most one frame's airtime. The task is not on the Task WDT and `loop()` no
+  longer blocks, so the sleep callback is gone. `send_raw` is now queued: it
+  returns once the request is accepted, not once it is sent. The radio's SPI
+  bus must not be shared with anything else.
 - **SPI ownership** — the component lets RadioLib drive SPI via raw pin numbers
   rather than sharing ESPHome's `spi` bus (and declares the Arduino SPI library
-  itself, since ESPHome skips it on ESP32). Fine as-is; revisit if it conflicts
-  with other SPI devices on the board.
+  itself, since ESPHome skips it on ESP32). With the radio task driving it
+  concurrently with the main loop, the bus must stay dedicated to the radio.
 - **SX1262 path is stubbed** — `init_radio_()` branches on chip but only SX1276
   is exercised. SX1262 needs `dio1` + `busy` (+ usually a TCXO voltage and
   `dio2_as_rf_switch`); add those to the radio schema when you do it.
