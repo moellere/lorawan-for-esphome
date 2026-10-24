@@ -17,17 +17,6 @@ constexpr uint32_t RADIO_TASK_STACK = 8192;
 constexpr UBaseType_t RADIO_TASK_PRIORITY = 3;  // loopTask runs at 1
 // Class C latches frames from the radio IRQ; polling the latch is cheap.
 constexpr uint32_t CLASS_C_POLL_MS = 50;
-
-// Lowest US915 data rate whose maximum application payload still fits `size`.
-// DR0 carries 11 bytes, DR1 53, DR2 125; DR3 and up carry more but cost range,
-// so this returns the slowest rate that works rather than the fastest.
-uint8_t min_datarate_for(size_t size) {
-  if (size <= 11)
-    return 0;
-  if (size <= 53)
-    return 1;
-  return 3;
-}
 }  // namespace
 
 static uint64_t parse_hex_u64(const std::string &hex) {
@@ -136,9 +125,14 @@ bool LoRaWANComponent::init_radio_() {
     return false;
   }
 
-  // US915 is the only band wired; the schema rejects every other region until
-  // its band (and its datarate table, see min_datarate_for) is added here.
+  // Only the regions the schema accepts. sub_band selects the 8-channel group
+  // on the fixed-channel bands (US915, AU915); RadioLib ignores it for EU868.
   const LoRaWANBand_t *band = &US915;
+  if (this->region_ == "EU868") {
+    band = &EU868;
+  } else if (this->region_ == "AU915") {
+    band = &AU915;
+  }
   this->node_ = new LoRaWANNode(this->radio_, band, this->sub_band_);
   return true;
 }
@@ -227,7 +221,16 @@ void LoRaWANComponent::radio_uplink_(const RadioRequest &req, RadioResult &res) 
   // or twice, then fails with RADIOLIB_ERR_PACKET_TOO_LONG (-4) forever once
   // the network has settled the rate. Setting it once after join is not enough
   // because ADR lowers it again afterwards.
-  this->node_->setDatarate(min_datarate_for(req.len));
+  //
+  // Take the slowest (longest-range) rate that carries the payload. RadioLib
+  // knows the band: setDatarate() refuses a rate no active channel allows, and
+  // getMaxPayloadLen() applies the band's per-rate limit, its dwell time, and
+  // any MAC answers queued into FOpts. If nothing fits, the send below fails
+  // with PACKET_TOO_LONG at the fastest rate tried.
+  for (uint8_t dr = 0; dr < RADIOLIB_LORAWAN_CHANNEL_NUM_DATARATES; dr++) {
+    if (this->node_->setDatarate(dr) == RADIOLIB_ERR_NONE && this->node_->getMaxPayloadLen() >= req.len)
+      break;
+  }
   res.up_port = req.f_port;
   res.up_len = req.len;
   // RadioLib ignores the incoming lenDown (it zeroes it) and writes up to
@@ -506,6 +509,8 @@ void LoRaWANComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "LoRaWAN:");
   ESP_LOGCONFIG(TAG, "  chip: %s", this->chip_.c_str());
   ESP_LOGCONFIG(TAG, "  region: %s  sub_band: %u", this->region_.c_str(), this->sub_band_);
+  if (this->region_ != "US915")
+    ESP_LOGW(TAG, "  region %s has never been run on hardware with this component", this->region_.c_str());
   LOG_PIN("  RST Pin: ", this->rst_pin_);
   LOG_PIN("  IRQ Pin: ", this->irq_pin_);
   LOG_PIN("  BUSY Pin: ", this->busy_pin_);
