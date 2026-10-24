@@ -5,11 +5,14 @@
 #include "esphome/core/automation.h"
 #include "esphome/core/preferences.h"
 #include "esphome/components/sensor/sensor.h"
+#include "esphome/components/spi/spi.h"
 #ifdef USE_DEEP_SLEEP
 #include "esphome/components/deep_sleep/deep_sleep_component.h"
 #endif
 
 #include <RadioLib.h>
+
+#include "esphome_hal.h"
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
@@ -42,9 +45,10 @@ struct SessionBlob {
 // join, 1-2 s on an uplink), so they run on a dedicated FreeRTOS task that owns
 // the radio. loop() never touches RadioLib after setup(): it queues join and
 // uplink requests and, on the main task, handles what comes back -- logging,
-// NVS writes, and on_downlink. The radio's SPI bus must not be shared with
-// another device, since the task drives it concurrently with the main loop.
-class LoRaWANComponent : public Component {
+// NVS writes, and on_downlink. The radio is an ordinary ESPHome SPI device, but
+// its bus must not be shared with another device (the schema enforces this),
+// since the task drives it concurrently with the main loop.
+class LoRaWANComponent : public Component, public RadioSpi {
  public:
   void setup() override;
   void loop() override;
@@ -53,23 +57,15 @@ class LoRaWANComponent : public Component {
   float get_setup_priority() const override { return setup_priority::AFTER_WIFI; }
 
   void set_chip(const std::string &chip) { this->chip_ = chip; }
-  void set_radio_pins(int cs, int irq, int rst, int busy) {
-    this->cs_pin_ = cs;
-    this->irq_pin_ = irq;
-    this->rst_pin_ = rst;
-    this->busy_pin_ = busy;
-  }
-  void set_sck_pin(int8_t pin) { this->sck_pin_ = pin; }
-  void set_miso_pin(int8_t pin) { this->miso_pin_ = pin; }
-  void set_mosi_pin(int8_t pin) { this->mosi_pin_ = pin; }
+  void set_rst_pin(GPIOPin *pin) { this->rst_pin_ = pin; }
+  void set_irq_pin(InternalGPIOPin *pin) { this->irq_pin_ = pin; }
+  void set_busy_pin(GPIOPin *pin) { this->busy_pin_ = pin; }
   void set_tcxo_voltage(float v) { this->tcxo_voltage_ = v; }
   void set_dio2_as_rf_switch(bool on) { this->dio2_as_rf_switch_ = on; }
-  void add_setup_high_pin(int pin) { this->setup_high_pins_.push_back(pin); }
-  void add_setup_low_pin(int pin) { this->setup_low_pins_.push_back(pin); }
-  void set_rf_switch_pins(int rxen, int txen) {
-    this->rxen_pin_ = rxen;
-    this->txen_pin_ = txen;
-  }
+  void add_setup_high_pin(GPIOPin *pin) { this->setup_high_pins_.push_back(pin); }
+  void add_setup_low_pin(GPIOPin *pin) { this->setup_low_pins_.push_back(pin); }
+  void set_rxen_pin(GPIOPin *pin) { this->rxen_pin_ = pin; }
+  void set_txen_pin(GPIOPin *pin) { this->txen_pin_ = pin; }
   void set_region(const std::string &region) { this->region_ = region; }
   void set_sub_band(uint8_t sub_band) { this->sub_band_ = sub_band; }
   void set_uplink_interval(uint32_t ms) { this->uplink_interval_ms_ = ms; }
@@ -145,27 +141,22 @@ class LoRaWANComponent : public Component {
   // following the join, so a Class C device should keep a nonzero
   // uplink_interval as its heartbeat.
   std::string device_class_{"A"};
-  int cs_pin_{-1};
-  int irq_pin_{-1};
-  int rst_pin_{-1};
-  int busy_pin_{-1};
-  // SPI bus pins; -1 leaves RadioLib on the framework's default SPI pins.
-  int8_t sck_pin_{-1};
-  int8_t miso_pin_{-1};
-  int8_t mosi_pin_{-1};
+  GPIOPin *rst_pin_{nullptr};
+  InternalGPIOPin *irq_pin_{nullptr};
+  GPIOPin *busy_pin_{nullptr};
   // Negative means "not configured": leave RadioLib on its own default
   // rather than forcing a crystal, since SX1262 boards are usually TCXO.
   float tcxo_voltage_{-1.0f};
   bool dio2_as_rf_switch_{false};
   // Front-end / PA enables asserted before the radio is touched.
-  std::vector<int> setup_high_pins_;
-  std::vector<int> setup_low_pins_;
-  // RF-switch pins RadioLib toggles per transfer: idle both LOW, txen HIGH
-  // during TX, rxen HIGH during RX. This is for PA/LNA enables that must NOT
-  // be held statically (e.g. Heltec V4.2's GC1109 PA_TX_EN on GPIO46: pinned
-  // high, the PA output stage stays engaged and the receiver is deaf).
-  int rxen_pin_{-1};
-  int txen_pin_{-1};
+  std::vector<GPIOPin *> setup_high_pins_;
+  std::vector<GPIOPin *> setup_low_pins_;
+  // Front-end selects RadioLib toggles per transfer: idle both LOW, txen HIGH
+  // during TX, rxen HIGH during RX (e.g. the Heltec V4's GC1109 CPS, full PA vs
+  // bypass, on GPIO46).
+  GPIOPin *rxen_pin_{nullptr};
+  GPIOPin *txen_pin_{nullptr};
+  EsphomeHal *hal_{nullptr};
   uint8_t sub_band_{2};
   uint32_t uplink_interval_ms_{300000};
   uint32_t last_uplink_{0};

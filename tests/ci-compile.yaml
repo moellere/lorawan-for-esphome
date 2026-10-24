@@ -34,6 +34,11 @@ deep_sleep:
   id: deep_sleep_1
   sleep_duration: 5min
 
+spi:
+  clk_pin: GPIO5
+  miso_pin: GPIO19
+  mosi_pin: GPIO27
+
 lorawan:
   id: lw
   deep_sleep_id: deep_sleep_1
@@ -51,6 +56,3 @@ lorawan:
     cs_pin: GPIO18
     rst_pin: GPIO23
     dio0_pin: GPIO26
-    sck_pin: GPIO5
-    miso_pin: GPIO19
-    mosi_pin: GPIO27

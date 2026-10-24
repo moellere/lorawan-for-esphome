@@ -115,8 +115,8 @@ Established through prior research; treat as given.
 ```
 components/lorawan/
   __init__.py      # config schema (region, sub_band, EUIs/key, radio pins,
-                   # uplink_interval) + to_code; pins jgromes/RadioLib 7.7.1,
-                   # declares the Arduino SPI library
+                   # uplink_interval) + to_code; pins jgromes/RadioLib 7.7.1
+  esphome_hal.*    # RadioLib HAL over ESPHome SPI + GPIO (Arduino and ESP-IDF)
   sensor.py        # sensor sub-platform: bind an ESPHome sensor as a payload field
   lorawan.h        # LoRaWANComponent: radio + LoRaWANNode, join/uplink, nonce pref
   lorawan.cpp      # setup() inits radio (begin on concrete chip) + joins;
@@ -180,10 +180,13 @@ generator come later, kept in lockstep with this byte layout.
   longer blocks, so the sleep callback is gone. `send_raw` is now queued: it
   returns once the request is accepted, not once it is sent. The radio's SPI
   bus must not be shared with anything else.
-- **SPI ownership** — the component lets RadioLib drive SPI via raw pin numbers
-  rather than sharing ESPHome's `spi` bus (and declares the Arduino SPI library
-  itself, since ESPHome skips it on ESP32). With the radio task driving it
-  concurrently with the main loop, the bus must stay dedicated to the radio.
+- **SPI ownership** — the radio is an ESPHome SPI device (`spi:` + `cs_pin`),
+  reached through `EsphomeHal` (`esphome_hal.cpp`): ESPHome owns CS via
+  `SPIDevice::enable()`/`disable()`, and RadioLib's pin numbers map to ESPHome
+  pins. That is what makes the ESP-IDF build work. Because the radio task
+  drives the bus concurrently with the main loop and ESPHome's SPI is not
+  thread-safe, a final validate rejects any other SPI device on the radio's
+  bus.
 - **SX1262 path is stubbed** — `init_radio_()` branches on chip but only SX1276
   is exercised. SX1262 needs `dio1` + `busy` (+ usually a TCXO voltage and
   `dio2_as_rf_switch`); add those to the radio schema when you do it.

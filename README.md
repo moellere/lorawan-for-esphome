@@ -26,9 +26,7 @@ LoRaWAN uplink — no per-sensor firmware code.
 
 ```yaml
 esp32:
-  board: ttgo-lora32-v1
-  framework:
-    type: arduino         # required: RadioLib uses the Arduino SPI library
+  board: ttgo-lora32-v1   # Arduino or ESP-IDF framework both work
 
 external_components:
   - source: github://moellere/lorawan-for-esphome@<commit-or-tag>  # pin, not main
@@ -47,6 +45,14 @@ lorawan:
     cs_pin: GPIO18
     rst_pin: GPIO23
     dio0_pin: GPIO26      # SX126x uses dio1_pin + busy_pin instead
+
+# The radio is an ESPHome SPI device, and its bus is its own: the component's
+# radio task drives it alongside the main loop, so the schema rejects any other
+# SPI device on the same spi: bus.
+spi:
+  clk_pin: GPIO5
+  miso_pin: GPIO19
+  mosi_pin: GPIO27
 
 sensor:
   - platform: lorawan
@@ -252,10 +258,13 @@ has the US915 band and datarate table, so another region would transmit on
 US915 frequencies. Each new region needs its band wired in `lorawan.cpp` and a
 hardware run before the schema allows it.
 
-The component also needs **ESP32 with the Arduino framework** (RadioLib uses
-the Arduino SPI library). ESPHome defaults ESP32 to ESP-IDF, so set
-`framework: type: arduino`; the schema rejects other platforms and frameworks
-at config time.
+The component runs on **ESP32** under either the Arduino or the ESP-IDF
+framework: RadioLib talks to the radio through ESPHome's own SPI and GPIO.
+
+**Upgrading from a config with `sck_pin`/`miso_pin`/`mosi_pin` under
+`radio:`:** move them to a top-level `spi:` block as `clk_pin`, `miso_pin` and
+`mosi_pin`; `cs_pin` stays under `radio:`. The old keys are rejected with that
+message.
 
 ## License
 

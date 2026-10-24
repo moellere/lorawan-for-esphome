@@ -75,6 +75,11 @@ sensor:
     lorawan_id: lw
     sensor: third_field
 
+spi:
+  clk_pin: GPIO9
+  miso_pin: GPIO11
+  mosi_pin: GPIO10
+
 lorawan:
   id: lw
   region: US915
@@ -94,9 +99,6 @@ lorawan:
     rst_pin: GPIO12
     dio1_pin: GPIO14
     busy_pin: GPIO13
-    sck_pin: GPIO9
-    miso_pin: GPIO11
-    mosi_pin: GPIO10
     # The SX1262 powers its oscillator from DIO3; the wrong voltage means the
     # chip never clocks and begin() fails ERR_SPI_CMD_TIMEOUT.
     tcxo_voltage: 1.8
