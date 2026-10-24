@@ -10,6 +10,7 @@ from esphome.const import (
     CONF_SPI_ID,
     CONF_TRIGGER_ID,
 )
+from esphome.core import CORE
 from esphome.final_validate import full_config
 
 CODEOWNERS = ["@moellere"]
@@ -225,6 +226,11 @@ async def to_code(config):
     # Upstream RadioLib, built against the HAL in esphome_hal.cpp (ESPHome SPI
     # and GPIO), so it works under ESP-IDF as well as Arduino.
     cg.add_library("jgromes/RadioLib", "7.7.1")
+    if CORE.using_arduino:
+        # Under Arduino, RadioLib's Module.h still includes <SPI.h> (for its
+        # unused ArduinoHal), and ESPHome's spi component does not pull in the
+        # Arduino SPI library on ESP32.
+        cg.add_library("SPI", None)
 
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
