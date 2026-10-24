@@ -13,6 +13,7 @@
 #include <RadioLib.h>
 
 #include "esphome_hal.h"
+#include "payload.h"
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
@@ -77,7 +78,9 @@ class LoRaWANComponent : public Component, public RadioSpi {
   void set_deep_sleep(deep_sleep::DeepSleepComponent *ds) { this->deep_sleep_ = ds; }
 #endif
 
-  void add_payload_field(sensor::Sensor *s) { this->fields_.push_back(s); }
+  void add_payload_field(sensor::Sensor *s, FieldType type, float multiplier) {
+    this->fields_.push_back({s, type, multiplier});
+  }
   void add_on_downlink_trigger(DownlinkTrigger *t) { this->downlink_triggers_.push_back(t); }
 
   // Queue an arbitrary application payload for the radio task, on the given
@@ -165,7 +168,12 @@ class LoRaWANComponent : public Component, public RadioSpi {
   uint64_t dev_eui_{0};
   uint8_t app_key_[16]{};
 
-  std::vector<sensor::Sensor *> fields_;
+  struct BoundField {
+    sensor::Sensor *sensor;
+    FieldType type;
+    float multiplier;
+  };
+  std::vector<BoundField> fields_;
   std::vector<DownlinkTrigger *> downlink_triggers_;
 
   // RadioLib owns the module/node; allocated in init_radio_() once the chip is

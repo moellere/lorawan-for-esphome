@@ -117,26 +117,30 @@ components/lorawan/
                    # uplink_interval) + to_code; pins jgromes/RadioLib 7.7.1
   esphome_hal.*    # RadioLib HAL over ESPHome SPI + GPIO (Arduino and ESP-IDF)
   sensor.py        # sensor sub-platform: bind an ESPHome sensor as a payload field
+  payload.h        # field encodings (float32, scaled ints); host-testable
   lorawan.h        # LoRaWANComponent: radio + LoRaWANNode, join/uplink, nonce pref
   lorawan.cpp      # setup() inits radio (begin on concrete chip) + joins;
                    # loop() interval-uplinks; nonces saved/restored via ESPPreferences
 codec/
-  decodeUplink.js  # reference ChirpStack codec (float32-LE, FIELDS in lockstep)
+  decodeUplink.js  # reference ChirpStack codec (FIELDS in lockstep with the bindings)
 example/
   spike-ttgo-lora32-v1.yaml     # bench config: WiFi + SX1276, keys via !secret
   field-headless.yaml           # production config: LoRaWAN-only, no WiFi/api/ota
   lorawan-secrets.yaml.example  # per-device namespaced keys template
 tests/
   ci-compile.yaml  # headless local-source config the CI gate compiles
+  codec/           # vectors.cpp packs with payload.h; check.js decodes with the codec
 .github/workflows/
   ci.yml           # esphome compile gate (pinned esphome), on push + PR
 README.md  LICENSE (MIT)  .gitignore  CLAUDE.md  HANDOFF.md (this file)
 ```
 
-Payload encoding (spike): each bound sensor's value is appended as
-little-endian `float32` in declaration order. Deliberately trivial — a compact
-codec (scaling/ints/bitfields) and a matching server-side `decodeUplink`
-generator come later, kept in lockstep with this byte layout.
+Payload encoding: each bound sensor's value is appended little-endian in
+declaration order, as `float32` or a scaled, saturating integer with a
+reserved "no reading" code (`components/lorawan/payload.h`; README, *Payload
+encoding*). `tests/codec` packs vectors with that header on the host and
+decodes them with `codec/decodeUplink.js` in CI. Generating the codec's
+`FIELDS` from the YAML is the orchestrator's job.
 
 ## Known caveats
 

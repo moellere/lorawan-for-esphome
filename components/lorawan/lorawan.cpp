@@ -361,12 +361,8 @@ void LoRaWANComponent::dispatch_downlink_(uint8_t f_port, const uint8_t *data, s
 
 void LoRaWANComponent::uplink_() {
   std::vector<uint8_t> payload;
-  payload.reserve(this->fields_.size() * 4);
-  for (auto *s : this->fields_) {
-    float v = s->state;
-    uint8_t *b = reinterpret_cast<uint8_t *>(&v);
-    payload.insert(payload.end(), b, b + 4);  // float32 little-endian, see codec
-  }
+  for (auto &f : this->fields_)
+    pack_field(payload, f.type, f.multiplier, f.sensor->state);
   this->request_(RadioRequest::UPLINK, 1, payload.data(), payload.size());
 }
 
@@ -474,8 +470,8 @@ void LoRaWANComponent::deep_sleep_cycle_() {
     if (this->cycle_start_ == 0)
       this->cycle_start_ = millis();
     bool ready = true;
-    for (auto *s : this->fields_)
-      ready = ready && s->has_state();
+    for (auto &f : this->fields_)
+      ready = ready && f.sensor->has_state();
     if (!ready && millis() - this->cycle_start_ < SENSOR_WAIT_MS)
       return;
     if (!ready)
@@ -523,7 +519,10 @@ void LoRaWANComponent::dump_config() {
   if (this->deep_sleep_ != nullptr)
     ESP_LOGCONFIG(TAG, "  deep sleep: one uplink per wake (deep_sleep sets the cadence)");
 #endif
-  ESP_LOGCONFIG(TAG, "  payload fields: %u", (unsigned) this->fields_.size());
+  size_t payload_len = 0;
+  for (auto &f : this->fields_)
+    payload_len += field_size(f.type);
+  ESP_LOGCONFIG(TAG, "  payload: %u fields, %u bytes", (unsigned) this->fields_.size(), (unsigned) payload_len);
 }
 
 }  // namespace lorawan

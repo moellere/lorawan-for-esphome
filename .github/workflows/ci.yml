@@ -11,6 +11,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The firmware's payload encoder against the ChirpStack decoder, on the
+      # host: no ESPHome needed, so it runs first.
+      - name: Codec round-trip
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror -Icomponents/lorawan -o /tmp/vectors tests/codec/vectors.cpp
+          /tmp/vectors | node tests/codec/check.js
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"

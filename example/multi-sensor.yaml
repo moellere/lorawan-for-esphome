@@ -2,15 +2,18 @@
 # sensors with ids, then add one `platform: lorawan` entry per value -- the order
 # of those entries is the byte order in the payload.
 #
-# Payload here: 2 x float32 LE = 8 bytes
-#   bytes 0-3: battery
-#   bytes 4-7: cpu_temp
+# Payload here: 4 bytes, little-endian
+#   bytes 0-1: battery, uint16, millivolts (volts x 1000)
+#   bytes 2-3: cpu_temp, int16, hundredths of a degree (C x 100)
 #
 # Matching ChirpStack decodeUplink (keep in lockstep -- see codec/decodeUplink.js):
-#   var FIELDS = ["battery", "cpu_temp"];
+#   var FIELDS = [
+#     { name: "battery", type: "uint16", multiplier: 1000 },
+#     { name: "cpu_temp", type: "int16", multiplier: 100 },
+#   ];
 #
-# 8 bytes fits even US915 DR0 (~11-byte app-payload cap). Add more fields only if
-# your data rate allows a larger payload -- see README "Payload encoding".
+# US915 DR0 carries 11 bytes, so there is room for more fields -- see README
+# "Payload encoding".
 
 esphome:
   name: lorawan-multi
@@ -41,9 +44,13 @@ sensor:
   - platform: lorawan
     lorawan_id: lw
     sensor: battery
+    type: uint16
+    multiplier: 1000
   - platform: lorawan
     lorawan_id: lw
     sensor: cpu_temp
+    type: int16
+    multiplier: 100
 
 spi:
   clk_pin: GPIO5
