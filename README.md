@@ -158,8 +158,8 @@ and is a bench/observation config.
 
 Do not just leave WiFi configured and let it fail: ESPHome's `wifi:` and `api:`
 both default to `reboot_timeout: 15min`, so an unreachable network reboot-loops
-the device — and every reboot re-joins, burning a DevNonce. Omit those components
-(or set their `reboot_timeout: 0s`).
+the device — and every reboot before a session is stored re-joins, burning a
+DevNonce. Omit those components (or set their `reboot_timeout: 0s`).
 
 Workflow — build, flash, and update are all **wired (USB serial)**:
 
@@ -173,8 +173,9 @@ device it is without a reboot -- the DevEUI is an identifier, not a secret, and
 it is the only thing tying the board in front of you to a record on the network
 server. Register the device and
 flush its DevNonces on the server once before first join; on later re-flashes,
-write the **app region only** to preserve the NVS-stored nonces (a full erase
-resets them). Future low-power (deep sleep) and remote-update (WiFi-on-demand via
+write the **app region only** to preserve the NVS-stored nonces and session (a
+full erase resets them). With a stored session, a reboot or re-flash logs
+`OTAA join OK (restored)` and resumes at the saved frame counter with no join. Future low-power (deep sleep) and remote-update (WiFi-on-demand via
 downlink) directions are tracked in [HANDOFF.md](HANDOFF.md).
 
 ### Webflashing and per-device builds (local build)
@@ -192,7 +193,7 @@ The one device-half contract the webflasher must honor is the **NVS / DevNonce**
 rule (same as the wired "app region only" point above):
 
 - Flashing the firmware parts **without a full erase preserves NVS** → DevNonces
-  survive → a re-flash re-joins cleanly.
+  and the session survive → a re-flash resumes the session with no join.
 - A full **"Erase device"** wipes NVS → DevNonces reset → the next join is
   silently dropped unless paired with a **server-side nonce flush**.
 - First flash of a blank device: register it and flush nonces once; no erase
@@ -200,6 +201,12 @@ rule (same as the wired "app region only" point above):
 - A firmware that **changes RadioLib's nonce-buffer version** also resets the
   DevNonces, even without an erase: the old blob is no longer readable. The
   7.2.1 -> 7.7.1 bump is one; flush server-side once after flashing it.
+- **Resetting the device on the server** (deleting or re-registering it, new
+  keys) while the board keeps its NVS leaves it uplinking on a session the
+  server no longer knows, and it never re-joins on its own. Pair a server-side
+  reset with a full erase so the board joins fresh. Changing the keys in the
+  firmware is safe: the stored nonces and session no longer match and are
+  discarded.
 
 So configure the webflasher to **not full-erase on re-flash** (preserve nonces),
 or flush server-side when you do. A shared-binary fleet (one image for many

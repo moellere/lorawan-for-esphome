@@ -41,9 +41,13 @@ uint8_t min_datarate_for(size_t size) {
 }
 }  // namespace
 
-// RadioLib's nonce buffer is a fixed size; persist exactly that blob in NVS.
+// RadioLib's nonce and session buffers are fixed size; persist exactly those
+// blobs in NVS.
 struct NoncesBlob {
   uint8_t data[RADIOLIB_LORAWAN_NONCES_BUF_SIZE];
+};
+struct SessionBlob {
+  uint8_t data[RADIOLIB_LORAWAN_SESSION_BUF_SIZE];
 };
 
 static uint64_t parse_hex_u64(const std::string &hex) {
@@ -147,29 +151,50 @@ bool LoRaWANComponent::init_radio_() {
   return true;
 }
 
-bool LoRaWANComponent::restore_nonces_() {
-  NoncesBlob blob{};
-  if (!this->nonces_pref_.load(&blob))
-    return false;
+void LoRaWANComponent::restore_state_() {
+  NoncesBlob nonces{};
+  if (!this->nonces_pref_.load(&nonces))
+    return;
   // setBufferNonces validates the blob's checksum against keyCheckSum, which is
   // only set by beginOTAA -- so this must run after beginOTAA, not before.
-  return this->node_->setBufferNonces(blob.data) == RADIOLIB_ERR_NONE;
+  if (this->node_->setBufferNonces(nonces.data) != RADIOLIB_ERR_NONE)
+    return;
+  // The session must follow the nonces: RadioLib checks its signature against
+  // the restored nonce buffer and discards a mismatched one, so a session from
+  // other keys or an older join never resumes. A restored session makes
+  // activateOTAA() return SESSION_RESTORED without any join airtime.
+  SessionBlob session{};
+  if (!this->session_pref_.load(&session))
+    return;
+  int16_t state = this->node_->setBufferSession(session.data);
+  if (state != RADIOLIB_ERR_NONE)
+    ESP_LOGD(TAG, "stored session not usable (%d), joining fresh", state);
 }
 
-void LoRaWANComponent::save_nonces_() {
-  NoncesBlob blob{};
-  memcpy(blob.data, this->node_->getBufferNonces(), sizeof(blob.data));
-  this->nonces_pref_.save(&blob);
+void LoRaWANComponent::save_state_() {
+  NoncesBlob nonces{};
+  memcpy(nonces.data, this->node_->getBufferNonces(), sizeof(nonces.data));
+  this->nonces_pref_.save(&nonces);
+  if (this->node_->isActivated()) {
+    SessionBlob session{};
+    memcpy(session.data, this->node_->getBufferSession(), sizeof(session.data));
+    this->session_pref_.save(&session);
+  }
+  // ESPHome only queues save() and writes NVS on the flash_write_interval
+  // (60 s default). A power cut inside that window would bring back an old
+  // DevNonce (join silently rejected) or an old FCnt (uplinks dropped as
+  // replays), so write through now.
+  global_preferences->sync();
 }
 
 bool LoRaWANComponent::join_() {
   this->node_->beginOTAA(this->join_eui_, this->dev_eui_, nullptr, this->app_key_);
   // beginOTAA calls clearNonces(); restore the persisted DevNonce afterwards so
   // it stays monotonic across reboots, or the server drops the join silently.
-  this->restore_nonces_();
+  this->restore_state_();
   // Blocks through the join RX windows. See the class comment in lorawan.h.
   int16_t state = this->node_->activateOTAA();
-  this->save_nonces_();  // persist the new DevNonce regardless of outcome
+  this->save_state_();  // persist the new DevNonce regardless of outcome
   if (state == RADIOLIB_LORAWAN_NEW_SESSION || state == RADIOLIB_LORAWAN_SESSION_RESTORED) {
     ESP_LOGI(TAG, "OTAA join OK (%s)",
              state == RADIOLIB_LORAWAN_SESSION_RESTORED ? "restored" : "new session");
@@ -212,7 +237,7 @@ bool LoRaWANComponent::transmit_(const uint8_t *data, size_t len, uint8_t f_port
   LoRaWANEvent_t down_event{};
   int16_t state = this->node_->sendReceive(data, len, f_port, down, &down_len, false,
                                            nullptr, &down_event);
-  this->save_nonces_();
+  this->save_state_();
   if (state < RADIOLIB_ERR_NONE) {
     ESP_LOGW(TAG, "uplink failed: %d", state);
     return false;
@@ -280,6 +305,7 @@ void LoRaWANComponent::setup() {
   // a byte from the layout, so a blob saved under an older RadioLib must never
   // reach setBufferNonces; a new key makes the old one unreachable.
   this->nonces_pref_ = global_preferences->make_preference<NoncesBlob>(fnv1_hash("lorawan_nonces_v3"));
+  this->session_pref_ = global_preferences->make_preference<SessionBlob>(fnv1_hash("lorawan_session"));
   this->joined_ = this->join_();
   if (!this->joined_)
     this->status_set_warning();
