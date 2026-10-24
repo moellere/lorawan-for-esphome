@@ -185,7 +185,10 @@ queued downlink arrives within a second (bench: 0.5 s). The network server
 must also know: ChirpStack takes the class from the device profile **at join
 time**, so set `supports_class_c` on the profile before the device joins; a
 device that joined under a Class A profile stays Class A server-side until it
-joins again, and its downlinks keep riding the next uplink.
+joins again, and its downlinks keep riding the next uplink. The same holds in
+reverse. A plain re-flash restores the stored session and does not rejoin, so
+after changing the profile's class, erase the device (and flush its DevNonces
+server-side) to force a fresh join.
 
 **Class-A latency.** A downlink can only be received in the window right after an
 uplink, so a server-queued downlink waits for the **next uplink** — up to one

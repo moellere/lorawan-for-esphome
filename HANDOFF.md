@@ -366,10 +366,12 @@ server-side. Expected; not the component.
 Board at handover (18:25): SLOT14 on the v0.1.0 Arduino Class C build
 (`device_class: C`, 1 min, one float32 field), DevEUI `8cfd49fffeb55758`,
 fresh session 01d339ff after a full erase, nonces flushed 18:18, and the
-device profile temporarily set to Class C for test 8 (to be reverted to
-Class A before a Class A build goes on it). Handed to the homelab session,
-which replaces the 137d06e gate firmware with a v0.1.0 gate config instead of
-restoring it.
+device profile temporarily set to Class C for test 8. Handed to the homelab
+session, which replaced the 137d06e gate firmware with a v0.1.0 gate config
+instead of restoring it, reset the profile to Class A, and confirmed the
+reverse of the test 8 rule: the Class A build over the Class C one restored
+session 01d339ff and ChirpStack kept `classEnabled: CLASS_C`; only an erase
+plus nonce flush produced a fresh Class A join (01cf0b19, 21:04).
 
 ## Deployment model (decided)
 
