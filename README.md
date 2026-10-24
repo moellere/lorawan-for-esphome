@@ -26,6 +26,11 @@ LoRaWAN uplink — no per-sensor firmware code.
 ## Usage
 
 ```yaml
+esp32:
+  board: ttgo-lora32-v1
+  framework:
+    type: arduino         # required: RadioLib uses the Arduino SPI library
+
 external_components:
   - source: github://moellere/lorawan-for-esphome@<commit-or-tag>  # pin, not main
     components: [lorawan]
@@ -202,9 +207,16 @@ which is not implemented; local build avoids it.
 
 ## Region support
 
-Only **US915 sub-band 2** has been exercised. The config schema accepts other
-regions so the band table can grow without a schema change, but they are
-unverified.
+Only **US915** is supported, and only sub-band 2 has been exercised. The config
+schema rejects any other `region` rather than accept it: the radio side only
+has the US915 band and datarate table, so another region would transmit on
+US915 frequencies. Each new region needs its band wired in `lorawan.cpp` and a
+hardware run before the schema allows it.
+
+The component also needs **ESP32 with the Arduino framework** (RadioLib uses
+the Arduino SPI library). ESPHome defaults ESP32 to ESP-IDF, so set
+`framework: type: arduino`; the schema rejects other platforms and frameworks
+at config time.
 
 ## License
 

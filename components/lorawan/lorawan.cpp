@@ -139,8 +139,8 @@ bool LoRaWANComponent::init_radio_() {
     return false;
   }
 
-  // US915 is the only band exercised in the spike; the schema accepts others so
-  // this switch can grow without a config change.
+  // US915 is the only band wired; the schema rejects every other region until
+  // its band (and its datarate table, see min_datarate_for) is added here.
   const LoRaWANBand_t *band = &US915;
   this->node_ = new LoRaWANNode(this->radio_, band, this->sub_band_);
   this->node_->setSleepFunction(radiolib_sleep);
