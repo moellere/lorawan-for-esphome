@@ -57,7 +57,7 @@ spi:
 sensor:
   - platform: lorawan
     lorawan_id: lw
-    sensor: some_existing_sensor   # appended to the uplink as float32 LE
+    sensor: some_existing_sensor   # appended to the uplink, float32 LE by default
 ```
 
 See [`example/spike-ttgo-lora32-v1.yaml`](example/spike-ttgo-lora32-v1.yaml)
@@ -97,12 +97,39 @@ Keys are MSB hex (matches the ChirpStack UI). Substitutions cannot be used insid
 
 ## Payload encoding
 
-Each `sensor:` binding appends its current value as a little-endian `float32`,
-in declaration order. A matching ChirpStack `decodeUplink` codec is in
-[`codec/decodeUplink.js`](codec/decodeUplink.js) — keep its `FIELDS` list in
-lockstep with the sensor bindings so device and server agree on the byte layout.
-The encoding is deliberately trivial for now; a compact codec (scaling, integers,
-bitfields) is a later refinement.
+Each `sensor:` binding appends its current value to the uplink (fPort 1),
+little-endian, in declaration order. `type` sets the encoding; the default is
+`float32`. The integer types send `round(value * multiplier)`:
+
+```yaml
+sensor:
+  - platform: lorawan
+    lorawan_id: lw
+    sensor: temperature
+    type: int16          # 2 bytes
+    multiplier: 100      # 21.37 C is sent as 2137
+```
+
+| `type` | Bytes | Sent value range | No reading |
+|---|---|---|---|
+| `float32` | 4 | the raw value | `NaN` |
+| `int8` / `uint8` | 1 | -127..127 / 0..254 | -128 / 255 |
+| `int16` / `uint16` | 2 | -32767..32767 / 0..65534 | -32768 / 65535 |
+| `int32` / `uint32` | 4 | ±2147483647 / 0..4294967294 | min / max |
+
+- `multiplier` applies to the integer types only (default 1) and must be
+  nonzero. Pick it for the resolution you need, then the smallest type whose
+  range covers `value * multiplier`.
+- A value out of range saturates at the range's edge, never wraps.
+- A sensor with no reading yet (`NaN`) sends the type's "no reading" code,
+  which no real value takes.
+
+A matching ChirpStack `decodeUplink` codec is in
+[`codec/decodeUplink.js`](codec/decodeUplink.js). List the same fields there,
+in order, with the same `type` and `multiplier`; it returns the "no reading"
+code as `null` and rejects a payload of the wrong length. CI packs test values
+with the firmware's own encoder and decodes them with that file, so the two
+cannot drift apart.
 
 To send several values, bind each sensor in payload order — see
 [`example/multi-sensor.yaml`](example/multi-sensor.yaml):
@@ -115,15 +142,20 @@ sensor:
   - platform: lorawan      # bind it into the uplink
     lorawan_id: lw
     sensor: battery
+    type: uint16
+    multiplier: 1000       # millivolts
 ```
 
-**Payload size vs data rate.** Each field is 4 bytes, and US915 at the slowest
-data rate (DR0/SF10) caps the application payload near **11 bytes** — so only
-**2** `float32` fields fit at DR0; more needs a higher DR (better link) or the
-frame is dropped. Values are read at uplink time, so keep each sensor's
-`update_interval` at or below `uplink_interval` (the first post-boot uplink may
-carry `NaN` if a slow sensor hasn't reported yet). Bindings take numeric
-`sensor::Sensor` values only.
+**Payload size vs data rate.** US915 at the slowest data rate (DR0/SF10) caps
+the application payload at **11 bytes**: two `float32` fields, or five
+`int16`. Each uplink takes the slowest rate that fits (see *Region support*);
+a payload too big for the fastest rate the link allows is dropped. The config
+dump logs the payload size. Values are read at uplink time, so keep each
+sensor's `update_interval` at or below `uplink_interval` (the first post-boot
+uplink may carry "no reading" if a slow sensor hasn't reported yet). Bindings
+take numeric `sensor::Sensor` values only. For a layout this cannot express
+(bitfields, a different fPort), build the bytes in a lambda and use
+`lorawan.send_raw`.
 
 ## Receiving downlinks
 

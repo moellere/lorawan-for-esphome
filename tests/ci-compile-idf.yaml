@@ -60,9 +60,12 @@ sensor:
   - platform: lorawan
     lorawan_id: lw
     sensor: second_field
+    type: int16
+    multiplier: 100
   - platform: lorawan
     lorawan_id: lw
     sensor: third_field
+    type: uint8
 
 spi:
   clk_pin: GPIO9
