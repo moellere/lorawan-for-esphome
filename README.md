@@ -16,11 +16,11 @@ LoRaWAN uplink — no per-sensor firmware code.
 > OTAA-joined, uplinked with an advancing FCnt, and received a downlink through
 > `on_downlink`, on RadioLib 7.2.1 (2026-08-28) and again on `main` @ ca52396
 > with RadioLib 7.7.1 and the Task WDT change (2026-10-24; see HANDOFF.md, *HIL
-> findings*). A true power-cycle nonce check is still pending. RadioLib's
-> blocking join and uplinks run on their own FreeRTOS task, so ESPHome's loop
-> keeps running through the RX windows; that radio task has not yet run on
+> findings*). A true power-cycle nonce check is still pending. Everything
+> merged after ca52396 -- session resume, deep sleep, the radio task, ESP-IDF,
+> EU868/AU915, typed payload fields -- compiles in CI but has not yet run on
 > hardware. Give the radio its own SPI pins: nothing else may share its bus.
-> Pin a commit, not `main`.
+> Pin a release tag (`v0.1.0`) or a commit, not `main`.
 
 ## Usage
 
@@ -29,7 +29,7 @@ esp32:
   board: ttgo-lora32-v1   # Arduino or ESP-IDF framework both work
 
 external_components:
-  - source: github://moellere/lorawan-for-esphome@<commit-or-tag>  # pin, not main
+  - source: github://moellere/lorawan-for-esphome@v0.1.0  # pin, not main
     components: [lorawan]
 
 lorawan:

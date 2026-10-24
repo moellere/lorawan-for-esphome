@@ -311,7 +311,9 @@ SEND_RAW_SCHEMA = cv.Schema(
 )
 
 
-@automation.register_action("lorawan.send_raw", SendRawAction, SEND_RAW_SCHEMA)
+@automation.register_action(
+    "lorawan.send_raw", SendRawAction, SEND_RAW_SCHEMA, synchronous=True
+)
 async def send_raw_action_to_code(config, action_id, template_arg, args):
     parent = await cg.get_variable(config[CONF_ID])
     var = cg.new_Pvariable(action_id, template_arg, parent)
