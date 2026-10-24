@@ -1,9 +1,6 @@
 #include "lorawan.h"
-#include "esphome/core/application.h"
 #include "esphome/core/log.h"
 #include "esphome/core/hal.h"
-
-#include <SPI.h>
 
 namespace esphome {
 namespace lorawan {
@@ -51,37 +48,50 @@ bool LoRaWANComponent::init_radio_() {
   // has its RF path unpowered at reset, and every later step still "succeeds"
   // -- begin() returns OK, uplinks report sent, and nothing ever reaches the
   // gateway. Assert these before anything touches the radio.
-  for (int pin : this->setup_high_pins_) {
-    pinMode(pin, OUTPUT);
-    digitalWrite(pin, HIGH);
-    ESP_LOGD(TAG, "front-end pin %d driven high", pin);
+  for (GPIOPin *pin : this->setup_high_pins_) {
+    pin->setup();
+    pin->digital_write(true);
   }
   // Active-low rails (e.g. Heltec V4's VEXT on GPIO36, which powers the FEM /
   // antenna path): an undriven VEXT leaves the front end unpowered -- TX still
   // "works" as leakage at desk range while RX is completely deaf, which is an
   // expensive failure to see from the device side.
-  for (int pin : this->setup_low_pins_) {
-    pinMode(pin, OUTPUT);
-    digitalWrite(pin, LOW);
-    ESP_LOGD(TAG, "front-end pin %d driven low", pin);
+  for (GPIOPin *pin : this->setup_low_pins_) {
+    pin->setup();
+    pin->digital_write(false);
   }
 
-  // Bind the Arduino SPI bus to the configured pins before RadioLib constructs
-  // the Module. RadioLib otherwise defaults to arduino-esp32's VSPI pins
-  // (18/19/23/5), which match almost no LoRa board's radio wiring and surface as
-  // ERR_CHIP_NOT_FOUND. Only when all three were supplied (schema enforces that).
-  if (this->sck_pin_ >= 0) {
-    SPI.begin(this->sck_pin_, this->miso_pin_, this->mosi_pin_, this->cs_pin_);
+  this->spi_setup();
+  // RadioLib reaches the radio through this HAL: ESPHome's SPI (which owns CS)
+  // and ESPHome pins, addressed by the HalPin numbers handed to Module.
+  this->hal_ = new EsphomeHal(this);
+  this->rst_pin_->setup();
+  this->hal_->set_pin(HAL_PIN_RST, this->rst_pin_);
+  this->irq_pin_->setup();
+  this->hal_->set_irq_pin(this->irq_pin_);
+  if (this->busy_pin_ != nullptr) {
+    this->busy_pin_->setup();
+    this->hal_->set_pin(HAL_PIN_BUSY, this->busy_pin_);
   }
-
-  Module *mod = new Module(this->cs_pin_, this->irq_pin_, this->rst_pin_, this->busy_pin_);
+  Module *mod = new Module(this->hal_, HAL_PIN_CS, HAL_PIN_IRQ, HAL_PIN_RST,
+                           this->busy_pin_ != nullptr ? (uint32_t) HAL_PIN_BUSY : RADIOLIB_NC);
   // Per-transfer RF switching (PA/LNA enables). RadioLib owns these pins from
   // here: idle LOW, txen HIGH only while transmitting, rxen HIGH only while
   // receiving. A pin listed here must not also be in setup_high.
-  if (this->rxen_pin_ >= 0 || this->txen_pin_ >= 0) {
-    mod->setRfSwitchPins(this->rxen_pin_ >= 0 ? (uint32_t) this->rxen_pin_ : RADIOLIB_NC,
-                         this->txen_pin_ >= 0 ? (uint32_t) this->txen_pin_ : RADIOLIB_NC);
-    ESP_LOGD(TAG, "rf switch pins: rxen=%d txen=%d", this->rxen_pin_, this->txen_pin_);
+  if (this->rxen_pin_ != nullptr || this->txen_pin_ != nullptr) {
+    uint32_t rxen = RADIOLIB_NC;
+    uint32_t txen = RADIOLIB_NC;
+    if (this->rxen_pin_ != nullptr) {
+      this->rxen_pin_->setup();
+      this->hal_->set_pin(HAL_PIN_RXEN, this->rxen_pin_);
+      rxen = HAL_PIN_RXEN;
+    }
+    if (this->txen_pin_ != nullptr) {
+      this->txen_pin_->setup();
+      this->hal_->set_pin(HAL_PIN_TXEN, this->txen_pin_);
+      txen = HAL_PIN_TXEN;
+    }
+    mod->setRfSwitchPins(rxen, txen);
   }
   // begin() lives on the concrete radio, not PhysicalLayer, and the config's
   // modulation values are placeholders -- LoRaWANNode reprograms the channel
@@ -496,9 +506,11 @@ void LoRaWANComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "LoRaWAN:");
   ESP_LOGCONFIG(TAG, "  chip: %s", this->chip_.c_str());
   ESP_LOGCONFIG(TAG, "  region: %s  sub_band: %u", this->region_.c_str(), this->sub_band_);
-  ESP_LOGCONFIG(TAG, "  pins: cs=%d rst=%d dio/irq=%d busy=%d sck=%d miso=%d mosi=%d",
-                this->cs_pin_, this->rst_pin_, this->irq_pin_, this->busy_pin_,
-                this->sck_pin_, this->miso_pin_, this->mosi_pin_);
+  LOG_PIN("  RST Pin: ", this->rst_pin_);
+  LOG_PIN("  IRQ Pin: ", this->irq_pin_);
+  LOG_PIN("  BUSY Pin: ", this->busy_pin_);
+  LOG_PIN("  RXEN Pin: ", this->rxen_pin_);
+  LOG_PIN("  TXEN Pin: ", this->txen_pin_);
   ESP_LOGCONFIG(TAG, "  dev_eui: %016llx", (unsigned long long) this->dev_eui_);
   ESP_LOGCONFIG(TAG, "  device_class: %s", this->device_class_.c_str());
   ESP_LOGCONFIG(TAG, "  uplink_interval: %u ms", this->uplink_interval_ms_);

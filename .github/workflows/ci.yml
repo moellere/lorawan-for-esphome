@@ -35,3 +35,8 @@ jobs:
       # every one of them fails silently on hardware if wrong.
       - name: Compile (SX1262 + TCXO/PA)
         run: esphome compile tests/ci-compile-sx1262.yaml
+
+      # The radio HAL sits on ESPHome's SPI/GPIO, so the component must also
+      # build without Arduino.
+      - name: Compile (SX1262, ESP-IDF)
+        run: esphome compile tests/ci-compile-idf.yaml

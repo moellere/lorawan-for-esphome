@@ -1,17 +1,26 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome import automation, pins
-from esphome.components import deep_sleep
-from esphome.const import CONF_ID, CONF_RUN_DURATION, CONF_SLEEP_DURATION, CONF_TRIGGER_ID
+from esphome.components import deep_sleep, spi
+from esphome.const import (
+    CONF_CS_PIN,
+    CONF_ID,
+    CONF_RUN_DURATION,
+    CONF_SLEEP_DURATION,
+    CONF_SPI_ID,
+    CONF_TRIGGER_ID,
+)
+from esphome.core import CORE
 from esphome.final_validate import full_config
 
 CODEOWNERS = ["@moellere"]
+DEPENDENCIES = ["spi"]
 # sensor bindings are an optional sub-platform; the component works without any.
 AUTO_LOAD = ["sensor"]
 MULTI_CONF = False
 
 lorawan_ns = cg.esphome_ns.namespace("lorawan")
-LoRaWANComponent = lorawan_ns.class_("LoRaWANComponent", cg.Component)
+LoRaWANComponent = lorawan_ns.class_("LoRaWANComponent", cg.Component, spi.SPIDevice)
 DownlinkTrigger = lorawan_ns.class_(
     "DownlinkTrigger",
     automation.Trigger.template(cg.uint8, cg.std_vector.template(cg.uint8)),
@@ -35,7 +44,6 @@ CONF_APP_KEY = "app_key"
 CONF_UPLINK_INTERVAL = "uplink_interval"
 CONF_RADIO = "radio"
 CONF_CHIP = "chip"
-CONF_CS_PIN = "cs_pin"
 CONF_RST_PIN = "rst_pin"
 CONF_DIO0_PIN = "dio0_pin"
 CONF_DIO1_PIN = "dio1_pin"
@@ -70,55 +78,57 @@ def _hex_of_len(nibbles):
     return validator
 
 
-RADIO_SCHEMA = cv.All(
-    cv.Schema(
-        {
-            cv.Required(CONF_CHIP): cv.one_of(*RADIO_CHIPS, lower=True),
-            cv.Required(CONF_CS_PIN): pins.internal_gpio_output_pin_number,
-            cv.Required(CONF_RST_PIN): pins.internal_gpio_output_pin_number,
-            # SX1276/78 use dio0; SX1262 uses dio1 + busy. The C++ side validates
-            # the combination against the chosen chip at setup; both optional here.
-            cv.Optional(CONF_DIO0_PIN): pins.internal_gpio_input_pin_number,
-            cv.Optional(CONF_DIO1_PIN): pins.internal_gpio_input_pin_number,
-            cv.Optional(CONF_BUSY_PIN): pins.internal_gpio_input_pin_number,
-            # Explicit SPI bus pins. RadioLib otherwise defaults to the ESP32 VSPI
-            # pins (18/19/23/5), which match almost no LoRa board's wiring and
-            # surface as ERR_CHIP_NOT_FOUND. All three or none -- SPI.begin()
-            # needs the full set.
-            cv.Optional(CONF_SCK_PIN): pins.internal_gpio_output_pin_number,
-            cv.Optional(CONF_MISO_PIN): pins.internal_gpio_input_pin_number,
-            cv.Optional(CONF_MOSI_PIN): pins.internal_gpio_output_pin_number,
-            # SX1262 boards clock the radio from a TCXO the SX1262 powers
-            # itself over DIO3. RadioLib has to be told the voltage or the
-            # oscillator never starts and begin() fails ERR_SPI_CMD_TIMEOUT --
-            # which reads like miswired SPI. 0 means "crystal, not TCXO".
-            cv.Optional(CONF_TCXO_VOLTAGE): cv.All(
-                cv.float_range(min=0.0, max=3.3), cv.float_
-            ),
-            # Many SX1262 modules wire the antenna switch to DIO2 instead of a
-            # GPIO. Without this the radio transmits into a switch that never
-            # flips: the device reports sending and nothing leaves the antenna.
-            cv.Optional(CONF_DIO2_AS_RF_SWITCH, default=False): cv.boolean,
-            # Pins that must be driven high before the radio is touched --
-            # front-end module power/enable, PA mode selects. Boards with an
-            # external PA (Heltec V3/V4) are deaf until these are asserted, and
-            # the failure is silent: begin() succeeds, joins never arrive.
-            cv.Optional(CONF_SETUP_HIGH): cv.ensure_list(
-                pins.internal_gpio_output_pin_number
-            ),
-            cv.Optional(CONF_SETUP_LOW): cv.ensure_list(
-                pins.internal_gpio_output_pin_number
-            ),
-            # PA/LNA enables RadioLib toggles per transfer (idle LOW, txen
-            # HIGH during TX, rxen HIGH during RX). For enables that must NOT
-            # be held statically: Heltec V4.2's GC1109 PA_TX_EN (GPIO46)
-            # pinned high leaves the PA engaged and the receiver deaf.
-            cv.Optional(CONF_RXEN_PIN): pins.internal_gpio_output_pin_number,
-            cv.Optional(CONF_TXEN_PIN): pins.internal_gpio_output_pin_number,
-        }
-    ),
-    cv.has_none_or_all_keys(CONF_SCK_PIN, CONF_MISO_PIN, CONF_MOSI_PIN),
+_MOVED_TO_SPI = (
+    "moved to a top-level `spi:` block (clk_pin, miso_pin, mosi_pin); the radio "
+    "is an ESPHome SPI device and keeps only cs_pin"
 )
+
+def _validate_irq_pins(radio):
+    # RadioLib's LoRaWAN MAC waits on the radio's interrupt line.
+    if radio[CONF_CHIP] == "sx1262":
+        for key in (CONF_DIO1_PIN, CONF_BUSY_PIN):
+            if key not in radio:
+                raise cv.Invalid(f"sx1262 needs {key}", path=[key])
+    elif CONF_DIO0_PIN not in radio:
+        raise cv.Invalid(f"{radio[CONF_CHIP]} needs {CONF_DIO0_PIN}", path=[CONF_DIO0_PIN])
+    return radio
+
+
+RADIO_SCHEMA = cv.All(cv.Schema(
+    {
+        cv.Required(CONF_CHIP): cv.one_of(*RADIO_CHIPS, lower=True),
+        cv.Required(CONF_RST_PIN): pins.gpio_output_pin_schema,
+        # SX1276/78 interrupt on dio0; SX1262 on dio1, plus busy.
+        cv.Optional(CONF_DIO0_PIN): pins.internal_gpio_input_pin_schema,
+        cv.Optional(CONF_DIO1_PIN): pins.internal_gpio_input_pin_schema,
+        cv.Optional(CONF_BUSY_PIN): pins.gpio_input_pin_schema,
+        cv.Optional(CONF_SCK_PIN): cv.invalid(_MOVED_TO_SPI),
+        cv.Optional(CONF_MISO_PIN): cv.invalid(_MOVED_TO_SPI),
+        cv.Optional(CONF_MOSI_PIN): cv.invalid(_MOVED_TO_SPI),
+        # SX1262 boards clock the radio from a TCXO the SX1262 powers
+        # itself over DIO3. RadioLib has to be told the voltage or the
+        # oscillator never starts and begin() fails ERR_SPI_CMD_TIMEOUT --
+        # which reads like miswired SPI. 0 means "crystal, not TCXO".
+        cv.Optional(CONF_TCXO_VOLTAGE): cv.All(cv.float_range(min=0.0, max=3.3), cv.float_),
+        # Many SX1262 modules wire the antenna switch to DIO2 instead of a
+        # GPIO. Without this the radio transmits into a switch that never
+        # flips: the device reports sending and nothing leaves the antenna.
+        cv.Optional(CONF_DIO2_AS_RF_SWITCH, default=False): cv.boolean,
+        # Pins that must be driven high (or low) before the radio is touched --
+        # front-end module power/enable, PA mode selects. Boards with an
+        # external PA (Heltec V3/V4) are deaf until these are asserted, and
+        # the failure is silent: begin() succeeds, joins never arrive.
+        cv.Optional(CONF_SETUP_HIGH): cv.ensure_list(pins.gpio_output_pin_schema),
+        cv.Optional(CONF_SETUP_LOW): cv.ensure_list(pins.gpio_output_pin_schema),
+        # Front-end selects RadioLib toggles per transfer (idle LOW, txen HIGH
+        # during TX, rxen HIGH during RX), e.g. the Heltec V4's GC1109 CPS
+        # (full PA vs bypass) on GPIO46.
+        cv.Optional(CONF_RXEN_PIN): pins.gpio_output_pin_schema,
+        cv.Optional(CONF_TXEN_PIN): pins.gpio_output_pin_schema,
+    }
+).extend(spi.spi_device_schema(cs_pin_required=True, default_data_rate=8e6, default_mode="MODE0")),
+    _validate_irq_pins)
+
 
 def _validate_deep_sleep_class(config):
     # Class C exists to keep the receiver open between uplinks; asleep, there
@@ -128,9 +138,7 @@ def _validate_deep_sleep_class(config):
     return config
 
 
-# ESP32 + Arduino only: init_radio_() uses the Arduino SPI.begin(sck, miso,
-# mosi, ss). ESPHome defaults ESP32 to ESP-IDF, and without these checks that
-# build fails deep inside RadioLib instead of at config time.
+# ESP32 only: the radio task is a FreeRTOS task pinned to the loop's core.
 CONFIG_SCHEMA = cv.All(
     cv.Schema(
         {
@@ -159,12 +167,39 @@ CONFIG_SCHEMA = cv.All(
         }
     ).extend(cv.COMPONENT_SCHEMA),
     cv.only_on_esp32,
-    cv.only_with_arduino,
     _validate_deep_sleep_class,
 )
 
 
+_SPI_BUS_SCHEMA = spi.final_validate_device_schema("lorawan", require_mosi=True, require_miso=True)
+
+
+def _spi_users(node, spi_id, found):
+    # Every config dict anywhere in the YAML that sits on this SPI bus.
+    if isinstance(node, dict):
+        if CONF_SPI_ID in node and str(node[CONF_SPI_ID]) == spi_id:
+            found.append(node)
+        for value in node.values():
+            _spi_users(value, spi_id, found)
+    elif isinstance(node, list):
+        for value in node:
+            _spi_users(value, spi_id, found)
+
+
 def _final_validate(config):
+    radio = config[CONF_RADIO]
+    _SPI_BUS_SCHEMA(radio)
+    # The radio task drives the bus concurrently with the main loop, and
+    # ESPHome's SPI is not thread-safe, so nothing else may share it.
+    users = []
+    _spi_users(dict(full_config.get()), str(radio[CONF_SPI_ID]), users)
+    if len(users) > 1:
+        raise cv.Invalid(
+            "the lorawan radio needs an SPI bus of its own: its radio task uses "
+            "the bus concurrently with the main loop. Give the other device(s) "
+            "a separate spi: bus.",
+            path=[CONF_RADIO, CONF_SPI_ID],
+        )
     if CONF_DEEP_SLEEP_ID not in config:
         return config
     fconf = full_config.get()
@@ -188,40 +223,38 @@ FINAL_VALIDATE_SCHEMA = _final_validate
 
 
 async def to_code(config):
-    # Upstream RadioLib first; fall back to an esphome-compile fork only if this
-    # will not build (see docs/esphome-component-pivot.md, open question).
+    # Upstream RadioLib, built against the HAL in esphome_hal.cpp (ESPHome SPI
+    # and GPIO), so it works under ESP-IDF as well as Arduino.
     cg.add_library("jgromes/RadioLib", "7.7.1")
-    # RadioLib's Module.h includes Arduino <SPI.h>. ESPHome's own spi component
-    # skips that library on ESP32 (it uses the IDF SPI driver), so pull it in
-    # explicitly or RadioLib won't find SPI.h.
-    cg.add_library("SPI", None)
+    if CORE.using_arduino:
+        # Under Arduino, RadioLib's Module.h still includes <SPI.h> (for its
+        # unused ArduinoHal), and ESPHome's spi component does not pull in the
+        # Arduino SPI library on ESP32.
+        cg.add_library("SPI", None)
 
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
 
     radio = config[CONF_RADIO]
+    await spi.register_spi_device(var, radio)
     cg.add(var.set_chip(radio[CONF_CHIP]))
-    cg.add(
-        var.set_radio_pins(
-            radio[CONF_CS_PIN],
-            radio.get(CONF_DIO0_PIN, radio.get(CONF_DIO1_PIN, -1)),
-            radio[CONF_RST_PIN],
-            radio.get(CONF_BUSY_PIN, -1),
-        )
-    )
-    if CONF_SCK_PIN in radio:
-        cg.add(var.set_sck_pin(radio[CONF_SCK_PIN]))
-        cg.add(var.set_miso_pin(radio[CONF_MISO_PIN]))
-        cg.add(var.set_mosi_pin(radio[CONF_MOSI_PIN]))
+    cg.add(var.set_rst_pin(await cg.gpio_pin_expression(radio[CONF_RST_PIN])))
+    irq = radio.get(CONF_DIO0_PIN, radio.get(CONF_DIO1_PIN))
+    if irq is not None:
+        cg.add(var.set_irq_pin(await cg.gpio_pin_expression(irq)))
+    if CONF_BUSY_PIN in radio:
+        cg.add(var.set_busy_pin(await cg.gpio_pin_expression(radio[CONF_BUSY_PIN])))
     if CONF_TCXO_VOLTAGE in radio:
         cg.add(var.set_tcxo_voltage(radio[CONF_TCXO_VOLTAGE]))
     cg.add(var.set_dio2_as_rf_switch(radio[CONF_DIO2_AS_RF_SWITCH]))
     for pin in radio.get(CONF_SETUP_HIGH, []):
-        cg.add(var.add_setup_high_pin(pin))
+        cg.add(var.add_setup_high_pin(await cg.gpio_pin_expression(pin)))
     for pin in radio.get(CONF_SETUP_LOW, []):
-        cg.add(var.add_setup_low_pin(pin))
-    if CONF_RXEN_PIN in radio or CONF_TXEN_PIN in radio:
-        cg.add(var.set_rf_switch_pins(radio.get(CONF_RXEN_PIN, -1), radio.get(CONF_TXEN_PIN, -1)))
+        cg.add(var.add_setup_low_pin(await cg.gpio_pin_expression(pin)))
+    if CONF_RXEN_PIN in radio:
+        cg.add(var.set_rxen_pin(await cg.gpio_pin_expression(radio[CONF_RXEN_PIN])))
+    if CONF_TXEN_PIN in radio:
+        cg.add(var.set_txen_pin(await cg.gpio_pin_expression(radio[CONF_TXEN_PIN])))
     cg.add(var.set_region(config[CONF_REGION]))
     cg.add(var.set_sub_band(config[CONF_SUB_BAND]))
     cg.add(var.set_uplink_interval(config[CONF_UPLINK_INTERVAL]))

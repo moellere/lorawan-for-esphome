@@ -35,6 +35,11 @@ sensor:
     lorawan_id: lw
     sensor: battery
 
+spi:
+  clk_pin: GPIO5
+  miso_pin: GPIO19
+  mosi_pin: GPIO27
+
 lorawan:
   id: lw
   region: US915
@@ -48,6 +53,3 @@ lorawan:
     cs_pin: GPIO18
     rst_pin: GPIO23
     dio0_pin: GPIO26
-    sck_pin: GPIO5
-    miso_pin: GPIO19
-    mosi_pin: GPIO27

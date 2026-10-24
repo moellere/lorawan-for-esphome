@@ -39,6 +39,11 @@ sensor:
     lorawan_id: lw
     sensor: battery
 
+spi:
+  clk_pin: GPIO9
+  miso_pin: GPIO11
+  mosi_pin: GPIO10
+
 lorawan:
   id: lw
   region: US915
@@ -53,19 +58,16 @@ lorawan:
     rst_pin: GPIO12
     dio1_pin: GPIO14
     busy_pin: GPIO13
-    sck_pin: GPIO9
-    miso_pin: GPIO11
-    mosi_pin: GPIO10
     tcxo_voltage: 1.8
     dio2_as_rf_switch: true
     # BENCH-PROVEN V4 recipe (OTAA join + Class C downlink validated on the
     # Wyola workbench, 2026-08-28):
     #   static high:  GPIO7 (VFEM LDO), GPIO2 (FEM chip enable / CSD)
     #   static low:   GPIO36 (VEXT, active low -- powers the FEM/antenna path)
-    #   per-transfer: GPIO46 (GC1109 PA_TX_EN) via txen_pin -- RadioLib raises
-    #                 it only while transmitting. Held statically high it pins
-    #                 the PA output stage on and the receiver is DEAF: joins
-    #                 transmit fine, join-accepts never arrive (-1116).
+    #   per-transfer: GPIO46 (GC1109 CPS: full PA vs bypass) via txen_pin --
+    #                 RadioLib raises it only while transmitting. CPS is
+    #                 don't-care in receive, so this is not what fixed the
+    #                 August deafness (see HANDOFF.md, HIL findings 2026-10-24).
     #   DIO2          TX/RX antenna select -- automatic (dio2_as_rf_switch)
     # V4.3 (KCT8103L) note: TX select is CTX on GPIO5 -- if a V4.3 board stays
     # deaf with this config, move txen_pin to GPIO5.

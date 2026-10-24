@@ -1,0 +1,100 @@
+# CI-only config: the SX1262 path built under ESP-IDF instead of Arduino, to
+# keep the ESPHome-SPI radio HAL honest on both frameworks. Otherwise the same
+# as ci-compile-sx1262.yaml, which says what it exercises. Keys are
+# placeholders from tests/secrets.yaml; this build never joins.
+esphome:
+  name: lorawan-ci-idf
+
+interval:
+  - interval: 10min
+    then:
+      - lorawan.send_raw:
+          id: lw
+          f_port: 10
+          payload: [0x01, 0x02, 0x03]
+  - interval: 15min
+    then:
+      - lorawan.send_raw:
+          id: lw
+          f_port: !lambda "return 10;"
+          payload: !lambda |-
+            std::vector<uint8_t> p;
+            p.push_back(0x2a);
+            return p;
+
+esp32:
+  board: heltec_wifi_lora_32_V3
+  framework:
+    type: esp-idf
+  variant: ESP32S3
+
+logger:
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+    components: [lorawan]
+
+# Three payload fields on purpose: 3 x float32 = 12 bytes, one byte over the
+# 11-byte US915 DR0 limit. That is the shape that uplinks a couple of times and
+# then fails with -4 forever once ADR settles the rate down, so keep the
+# multi-field path compiled.
+sensor:
+  - platform: adc
+    pin: GPIO1
+    name: "Battery"
+    id: battery
+    update_interval: 60s
+  - platform: template
+    name: "Second"
+    id: second_field
+    lambda: "return 1.0;"
+  - platform: template
+    name: "Third"
+    id: third_field
+    lambda: "return 2.0;"
+  - platform: lorawan
+    lorawan_id: lw
+    sensor: battery
+  - platform: lorawan
+    lorawan_id: lw
+    sensor: second_field
+  - platform: lorawan
+    lorawan_id: lw
+    sensor: third_field
+
+spi:
+  clk_pin: GPIO9
+  miso_pin: GPIO11
+  mosi_pin: GPIO10
+
+lorawan:
+  id: lw
+  region: US915
+  sub_band: 2
+  dev_eui: !secret dev_eui
+  join_eui: !secret join_eui
+  app_key: !secret app_key
+  uplink_interval: 5min
+  # Continuous receive between uplinks; downlinks land in seconds.
+  device_class: C
+  on_downlink:
+    - lambda: |-
+        ESP_LOGD("ci", "downlink port=%u len=%u", port, (unsigned) payload.size());
+  radio:
+    chip: sx1262
+    cs_pin: GPIO8
+    rst_pin: GPIO12
+    dio1_pin: GPIO14
+    busy_pin: GPIO13
+    # The SX1262 powers its oscillator from DIO3; the wrong voltage means the
+    # chip never clocks and begin() fails ERR_SPI_CMD_TIMEOUT.
+    tcxo_voltage: 1.8
+    # Antenna switch on DIO2 rather than a GPIO.
+    dio2_as_rf_switch: true
+    # Static front-end enables plus a per-transfer PA enable (txen_pin):
+    # RadioLib raises it during TX only. See example/heltec-v4-node.yaml.
+    setup_high: [GPIO7, GPIO2]
+    setup_low: [GPIO36]
+    txen_pin: GPIO46
