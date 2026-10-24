@@ -11,6 +11,10 @@
 
 #include <RadioLib.h>
 
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
+#include <freertos/task.h>
+
 #include <string>
 #include <vector>
 
@@ -22,14 +26,24 @@ namespace lorawan {
 // window after an uplink, so latency is up to one uplink_interval.
 class DownlinkTrigger : public Trigger<uint8_t, std::vector<uint8_t>> {};
 
-// Spike scope: OTAA join + periodic uplink of float32 sensor values on US915
-// sub-band 2, with DevNonce/session persistence in ESPHome's NVS-backed
-// preferences so a power cycle re-joins without a server-side nonce flush.
+// RadioLib's nonce and session buffers are fixed size; persist exactly those
+// blobs in NVS.
+struct NoncesBlob {
+  uint8_t data[RADIOLIB_LORAWAN_NONCES_BUF_SIZE];
+};
+struct SessionBlob {
+  uint8_t data[RADIOLIB_LORAWAN_SESSION_BUF_SIZE];
+};
+
+// OTAA join + uplink of ESPHome sensor values, with DevNonce/session
+// persistence in ESPHome's NVS-backed preferences.
 //
-// The one unresolved risk is RX-window timing: RadioLib's sendReceive() blocks
-// through RX1 (+1s) and RX2 (+2s), and ESPHome's loop is cooperative. This spike
-// blocks in loop() on purpose to keep it minimal; making that non-blocking (or
-// second-core) is the thing the spike must prove out before this is real.
+// RadioLib's join and sendReceive() block through the RX windows (5-6 s on a
+// join, 1-2 s on an uplink), so they run on a dedicated FreeRTOS task that owns
+// the radio. loop() never touches RadioLib after setup(): it queues join and
+// uplink requests and, on the main task, handles what comes back -- logging,
+// NVS writes, and on_downlink. The radio's SPI bus must not be shared with
+// another device, since the task drives it concurrently with the main loop.
 class LoRaWANComponent : public Component {
  public:
   void setup() override;
@@ -70,25 +84,58 @@ class LoRaWANComponent : public Component {
   void add_payload_field(sensor::Sensor *s) { this->fields_.push_back(s); }
   void add_on_downlink_trigger(DownlinkTrigger *t) { this->downlink_triggers_.push_back(t); }
 
-  // Send an arbitrary application payload right now, on the given fPort.
-  // This is the API for devices whose payload is not a float32 sensor pack
-  // (packed binary telemetry, protobufs, ...). Blocks through the Class A RX
-  // windows exactly like the periodic uplink, counts as *the* uplink for
-  // interval purposes, and feeds any downlink to on_downlink. Returns false
-  // when not joined or the radio rejected the send.
+  // Queue an arbitrary application payload for the radio task, on the given
+  // fPort. This is the API for devices whose payload is not a sensor pack
+  // (packed binary telemetry, protobufs, ...). It counts as *the* uplink for
+  // interval purposes, and any downlink in its RX windows reaches on_downlink.
+  // Returns false when not joined or the queue is full; true means queued, not
+  // sent -- the outcome is logged when the radio task reports back.
   bool send_raw(uint8_t f_port, const std::vector<uint8_t> &payload);
 
   bool is_joined() const { return this->joined_; }
 
  protected:
+  // What loop() hands the radio task.
+  struct RadioRequest {
+    enum Kind : uint8_t { JOIN, UPLINK } kind;
+    uint8_t f_port;
+    uint8_t len;
+    uint8_t data[RADIOLIB_LORAWAN_MAX_PAYLOAD_SIZE];
+  };
+  // What the radio task hands back. Carries a copy of RadioLib's persistent
+  // buffers taken right after the operation, so NVS is written on the main
+  // task (ESPHome's preferences are not thread-safe).
+  struct RadioResult {
+    enum Kind : uint8_t { JOINED, JOIN_FAILED, UPLINK_SENT, UPLINK_FAILED, DOWNLINK, CLASS_C_FAILED } kind;
+    int16_t state;
+    int16_t class_state;
+    uint8_t up_port;
+    uint8_t up_len;
+    uint8_t down_port;
+    uint8_t down_len;
+    bool frm_pending;
+    bool has_state;
+    bool has_session;
+    uint8_t down[RADIOLIB_LORAWAN_MAX_PAYLOAD_SIZE];
+    NoncesBlob nonces;
+    SessionBlob session;
+  };
+
   bool init_radio_();
   void restore_state_();
-  void save_state_();
-  bool join_();
+  void save_state_(const RadioResult &res);
+  bool request_(RadioRequest::Kind kind, uint8_t f_port, const uint8_t *data, size_t len);
   void uplink_();
-  bool transmit_(const uint8_t *data, size_t len, uint8_t f_port);
+  void handle_result_(const RadioResult &res);
   void dispatch_downlink_(uint8_t f_port, const uint8_t *data, size_t len);
-  void poll_class_c_();
+
+  // Radio task side: only these touch node_/radio_ once the task is running.
+  static void radio_task_(void *arg);
+  void radio_task_loop_();
+  void radio_join_(RadioResult &res);
+  void radio_uplink_(const RadioRequest &req, RadioResult &res);
+  bool radio_poll_class_c_(RadioResult &res);
+  void radio_snapshot_(RadioResult &res);
 
   std::string chip_;
   std::string region_{"US915"};
@@ -139,10 +186,22 @@ class LoRaWANComponent : public Component {
   ESPPreferenceObject nonces_pref_;
   ESPPreferenceObject session_pref_;
 
+  QueueHandle_t requests_{nullptr};
+  QueueHandle_t results_{nullptr};
+  // Requests queued and not yet answered; loop() schedules nothing new while
+  // one is on the radio.
+  uint8_t in_flight_{0};
+  // Main-task scratch for draining results_ (a RadioResult is ~600 bytes).
+  RadioResult result_buf_{};
+  // Radio-task only.
+  bool class_c_active_{false};
+  RadioResult task_result_{};
+
 #ifdef USE_DEEP_SLEEP
   void deep_sleep_cycle_();
   deep_sleep::DeepSleepComponent *deep_sleep_{nullptr};
   uint32_t cycle_start_{0};
+  bool uplink_queued_{false};
   bool cycle_done_{false};
 #endif
 };
