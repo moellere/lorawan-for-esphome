@@ -51,10 +51,10 @@ CONF_TXEN_PIN = "txen_pin"
 # on this string to construct the right module.
 RADIO_CHIPS = ["sx1276", "sx1278", "sx1262"]
 
-# Spike scope is US915 sub-band 2 (the validated gateway). Other regions are
-# accepted by the schema so the band table can grow without a schema change,
-# but only US915 has been exercised.
-REGIONS = ["US915", "EU868", "AU915", "AS923"]
+# The C++ side only wires the US915 band (and the US915 datarate table), so any
+# other region would transmit on US915 frequencies. Reject it here until its
+# band is actually supported.
+REGIONS = ["US915"]
 
 
 def _hex_of_len(nibbles):
@@ -117,27 +117,34 @@ RADIO_SCHEMA = cv.All(
     cv.has_none_or_all_keys(CONF_SCK_PIN, CONF_MISO_PIN, CONF_MOSI_PIN),
 )
 
-CONFIG_SCHEMA = cv.Schema(
-    {
-        cv.GenerateID(): cv.declare_id(LoRaWANComponent),
-        cv.Optional(CONF_REGION, default="US915"): cv.one_of(*REGIONS, upper=True),
-        cv.Optional(CONF_SUB_BAND, default=2): cv.int_range(min=0, max=8),
-        cv.Required(CONF_DEV_EUI): _hex_of_len(16),
-        cv.Required(CONF_JOIN_EUI): _hex_of_len(16),
-        cv.Required(CONF_APP_KEY): _hex_of_len(32),
-        cv.Optional(
-            CONF_UPLINK_INTERVAL, default="5min"
-        ): cv.positive_time_period_milliseconds,
-        # Class C keeps the receiver open between uplinks (mains/large-battery
-        # devices only): downlinks land in seconds instead of at the next
-        # uplink's RX window. Class B (beaconing) is not supported by RadioLib.
-        cv.Optional(CONF_DEVICE_CLASS, default="A"): cv.one_of("A", "C", upper=True),
-        cv.Required(CONF_RADIO): RADIO_SCHEMA,
-        cv.Optional(CONF_ON_DOWNLINK): automation.validate_automation(
-            {cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(DownlinkTrigger)}
-        ),
-    }
-).extend(cv.COMPONENT_SCHEMA)
+# ESP32 + Arduino only: init_radio_() uses the Arduino SPI.begin(sck, miso,
+# mosi, ss). ESPHome defaults ESP32 to ESP-IDF, and without these checks that
+# build fails deep inside RadioLib instead of at config time.
+CONFIG_SCHEMA = cv.All(
+    cv.Schema(
+        {
+            cv.GenerateID(): cv.declare_id(LoRaWANComponent),
+            cv.Optional(CONF_REGION, default="US915"): cv.one_of(*REGIONS, upper=True),
+            cv.Optional(CONF_SUB_BAND, default=2): cv.int_range(min=0, max=8),
+            cv.Required(CONF_DEV_EUI): _hex_of_len(16),
+            cv.Required(CONF_JOIN_EUI): _hex_of_len(16),
+            cv.Required(CONF_APP_KEY): _hex_of_len(32),
+            cv.Optional(
+                CONF_UPLINK_INTERVAL, default="5min"
+            ): cv.positive_time_period_milliseconds,
+            # Class C keeps the receiver open between uplinks (mains/large-battery
+            # devices only): downlinks land in seconds instead of at the next
+            # uplink's RX window. Class B (beaconing) is not supported by RadioLib.
+            cv.Optional(CONF_DEVICE_CLASS, default="A"): cv.one_of("A", "C", upper=True),
+            cv.Required(CONF_RADIO): RADIO_SCHEMA,
+            cv.Optional(CONF_ON_DOWNLINK): automation.validate_automation(
+                {cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(DownlinkTrigger)}
+            ),
+        }
+    ).extend(cv.COMPONENT_SCHEMA),
+    cv.only_on_esp32,
+    cv.only_with_arduino,
+)
 
 
 async def to_code(config):

@@ -21,18 +21,16 @@ this is a real contribution, not a duplicate.
 
 ## Status
 
-**Pre-alpha; compiles, partly hardware-validated.** The component builds clean
-via `esphome compile` against RadioLib 7.7.1 + ESPHome 2026.6.1, gated by CI
-(`.github/workflows/ci.yml`). Every RadioLib call was verified against the pinned
-7.7.1 headers; the OTAA/nonce-restore path and the `activateOTAA` return codes are
-fixed. On hardware (Heltec V4 / SX1262, US915 sub-band 2) it has OTAA-joined,
-uplinked with an advancing FCnt, and received a downlink through `on_downlink`
--- but on RadioLib 7.2.1, before the 7.7.1 bump (nonce-buffer reset,
-`ConfigLoRa_t` begin) and the Task WDT change (`setSleepFunction`); see *HIL
-findings* below. Remaining hardware work: re-run that on current `main`,
-confirm a join with no gateway answering no longer trips the WDT, verify
-power-cycle nonce persistence (spike acceptance #4), and cover the TTGO
-LoRa32 / SX1276 path that #2 names.
+**Pre-alpha; compiles, hardware-validated on the Heltec V4.** The component
+builds clean via `esphome compile` against RadioLib 7.7.1 + ESPHome 2026.6.1,
+gated by CI (`.github/workflows/ci.yml`). On 2026-10-24, `main` @ ca52396
+(RadioLib 7.7.1, `ConfigLoRa_t` begin, Task WDT fed from `setSleepFunction`)
+OTAA-joined on the first attempt, uplinked every 60 s, received a downlink
+through `on_downlink`, re-joined after a chip reset with no server-side nonce
+flush, and sat through six consecutive no-gateway join failures (6.6 s blocked
+each) without a watchdog reset -- see *HIL findings (2026-10-24)* below. Still
+open on hardware: a true power cycle (only a chip reset has been pulled), and
+the TTGO LoRa32 / SX1276 path.
 
 ## Reuse-first, and the WireStudio boundary
 
@@ -71,14 +69,15 @@ stall. It only resurfaces if WiFi is ever made co-resident.
 1. ~~The component builds via `esphome compile`.~~ **Done** — CI-green.
 2. On a TTGO LoRa32 v1 (SX1276), it OTAA-joins a real LoRaWAN network
    (US915, sub-band 2) and an uplink is received + decoded server-side.
-   *(Join + uplink seen on a Heltec V4 / SX1262 under RadioLib 7.2.1 -- see
-   HIL findings; TTGO / SX1276 still pending.)*
+   **Done on a Heltec V4 / SX1262** (2026-08-28 on RadioLib 7.2.1, 2026-10-24
+   on `main` @ ca52396); TTGO / SX1276 still pending.
 3. WiFi/API stay responsive during the uplink burst. **Reframed:** the field
    profile is headless (no WiFi/API), so the blocking RX windows have nothing
    time-sensitive to stall — this criterion only bites a WiFi-coresident build,
    which we don't ship. *(see Deployment model)*
 4. A **power cycle re-joins without a server-side nonce flush** — i.e. the
-   DevNonce persistence works. *(pending hardware)*
+   DevNonce persistence works. *(Chip reset verified 2026-10-24: re-joined in
+   8 s with no flush. A true power pull still needs a human at Wyola.)*
 
 With #1 done and #3 reframed, the rest (config polish, SX1262, a compact payload
 codec, more regions) is mechanical once #2 and #4 are confirmed on hardware.
@@ -106,8 +105,10 @@ Established through prior research; treat as given.
 4. **MSB key order.** RadioLib takes DevEUI / JoinEUI / AppKey in MSB order,
    matching the ChirpStack UI. Config hex is MSB.
 5. **Region/sub-band must match the gateway.** US915 sub-band 2 is the only
-   exercised band. A wrong channel mask = the device transmits joins on
-   channels the gateway never hears = a "won't join" that is not auth.
+   exercised band, and US915 is the only region the schema accepts (the C++
+   hardcodes the US915 band). A wrong channel mask = the device transmits
+   joins on channels the gateway never hears = a "won't join" that is not
+   auth.
 
 ## What's in the scaffold
 
@@ -330,10 +331,72 @@ queued downlink (fport 10) received and dispatched to `on_downlink`.
 Two quirks worth knowing:
 - The first join attempt after power-up consistently fails -1116; the retry
   one uplink_interval later succeeds. Unexplained -- possibly FEM settle
-  after VEXT power-on. Harmless with the existing retry loop.
+  after VEXT power-on. Harmless with the existing retry loop. **Did not
+  reproduce on 2026-10-24** (RadioLib 7.7.1): 3 of 3 first joins succeeded.
 - A Class A device profile server-side means downlinks ride the next uplink's
   RX window even when the device runs Class C locally; immediate delivery
   needs `supports_class_c` in the ChirpStack device profile too.
+
+**Revisited 2026-10-24: the mechanism above is wrong.** The GC1109 truth table
+(quoted in Meshtastic `variants/esp32s3/heltec_v4/variant.h`) has CPS (GPIO46)
+as don't-care in receive -- it only selects full PA vs bypass during transmit,
+and TX/RX path select is CTX, driven by SX1262 DIO2. A static-high GPIO46 cannot
+deafen the receiver, and the gate board running 137d06e with GPIO46 (and GPIO5)
+held statically high joined at 13:51 UTC. `txen_pin: GPIO46` is still correct
+(full PA in TX, nothing in RX) but it is not what fixed the August deafness.
+b7da617 changed several things at once; the real cause is unrecorded. See the
+2026-10-24 HIL findings.
+
+## HIL findings — main @ ca52396 on the Heltec V4 (2026-10-24)
+
+Run by the "Homelab working session" on the Wyola workbench, SLOT14, from the
+brief in this session; serial evidence cross-read from the slot's buffer.
+Build: ESPHome 2026.8.1 (CI pins 2026.6.1), RadioLib 7.7.1 fetched by
+PlatformIO. Config: the GNSS-16M board's pins with the proven radio block
+(`setup_high: [GPIO7, GPIO2]`, `setup_low: [GPIO36]`, `txen_pin: GPIO46`,
+`dio2_as_rf_switch`, `tcxo_voltage: 1.8`), `uplink_interval: 1min`, Class A.
+Flashed as a full factory image at 0x0 **without** erasing NVS, so the 7.2.1
+nonce blob was still on flash and the new `lorawan_nonces_v3` key started
+fresh; DevNonces were flushed server-side once before the first flash. Every
+boot's reset reason was `rst:0x15 (USB_UART_CHIP_RESET)`, i.e. the harness.
+
+1. **Radio init -- pass.** `sx1262 begin with tcxo 1.80V` on every boot, no
+   `radio begin failed`. `ConfigLoRa_t` + `radio->tcxoVoltage` work.
+2. **Join + uplink -- pass.** `OTAA join OK (new session)` at 13:30:17 on the
+   first attempt; `uplink sent` every 60 s as `8cfd49fffeb55758`; ChirpStack
+   `f_cnt_up` 3 at 13:33.
+3. **Downlink -- pass.** fport 10 `[0a 0b 0c]` enqueued over gRPC; 13:31:13
+   `downlink fport=10 (3 bytes)` then `on_downlink fired: port=10 len=3`;
+   queue drained.
+4. **Task WDT -- pass.** Re-flashed as the unregistered DevEUI
+   `8cfd49fffeb5dead` (ChirpStack NOT_FOUND): six consecutive `OTAA join
+   failed: -1116` from 13:41:04 to 13:46:04, each blocking 6623 ms (ESPHome's
+   `took a long time for an operation` warning), with no `task_wdt`, no panic,
+   and no reset line between them. Before #13 this case reboot-looped.
+5. **Nonce persistence -- pass for a chip reset.** Harness reset at 13:34:10
+   with no server flush; `OTAA join OK` at 13:34:18 with a new dev_addr. A
+   true power pull is still unverified; NVS should not care.
+
+Also observed:
+- `loop()` still blocks 6.6 s on a failed join and 1.4 s on an uplink with RX
+  windows. The sleep callback keeps the WDT fed; other components starve for
+  that long. Headless profile only, as decided.
+- `tests/secrets.yaml` carries DevEUI `70b3d57ed0000000`, which is registered
+  nowhere; a build from it cannot join. The registered V4 identity is
+  `8cfd49fffeb55758` (ChirpStack app `wirestudio`).
+- ChirpStack REST is on `10.254.0.11:8090` (`:8080` is gRPC/UI). The nonce
+  flush is `DeviceService.FlushDevNonces`; wirestudio wraps it as
+  `ChirpStackClient.flush_dev_nonces()`. Server side, not this repo.
+- The GNSS-16M gate config pins 137d06e (before `setup_low`/`txen_pin`
+  existed) and holds GPIO7, GPIO2, GPIO5 and GPIO46 statically high with no
+  VEXT drive. It joined at 13:51 after being restored. On a V4.2 GPIO5 is
+  unconnected; on a V4.3 GPIO5 is KCT8103L CTX, and high means RX bypass
+  (21 dB less LNA gain), so that config would receive weaker than it could.
+  Which revision the board is has not been read off the silkscreen.
+
+Final state: SLOT14 restored to its gate firmware (137d06e, RadioLib 7.2.1,
+5 min uplinks), nonces flushed before the restore, joined 13:51. `main` is not
+deployed on any gate board.
 
 ## Sources
 

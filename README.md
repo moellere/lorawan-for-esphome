@@ -14,10 +14,11 @@ LoRaWAN uplink — no per-sensor firmware code.
 > **Status: pre-alpha.** Compiles cleanly (CI-gated) against RadioLib 7.7.1 +
 > ESPHome 2026.6.1. On hardware (Heltec V4 / SX1262, US915 sub-band 2) it has
 > OTAA-joined, uplinked with an advancing FCnt, and received a downlink through
-> `on_downlink` — but that run was on RadioLib 7.2.1 (see HANDOFF.md, *HIL
-> findings*). **Not yet re-run on hardware since the 7.7.1 bump**, and
-> power-cycle nonce persistence is still unverified. The field profile runs
-> headless (no WiFi), which sidesteps the RX-window/loop-timing concern:
+> `on_downlink`, on RadioLib 7.2.1 (2026-08-28) and again on `main` @ ca52396
+> with RadioLib 7.7.1 and the Task WDT change (2026-10-24; see HANDOFF.md, *HIL
+> findings*). A true power-cycle nonce check is still pending. The field
+> profile runs headless (no WiFi), which sidesteps the RX-window/loop-timing
+> concern:
 > `loop()` blocks through the RX windows, but with no WiFi/API there is nothing
 > time-sensitive to stall, and the ESP-IDF Task WDT is fed from RadioLib's
 > sleep callback through those waits, so they don't reboot the device. Pin a
@@ -26,6 +27,11 @@ LoRaWAN uplink — no per-sensor firmware code.
 ## Usage
 
 ```yaml
+esp32:
+  board: ttgo-lora32-v1
+  framework:
+    type: arduino         # required: RadioLib uses the Arduino SPI library
+
 external_components:
   - source: github://moellere/lorawan-for-esphome@<commit-or-tag>  # pin, not main
     components: [lorawan]
@@ -202,9 +208,16 @@ which is not implemented; local build avoids it.
 
 ## Region support
 
-Only **US915 sub-band 2** has been exercised. The config schema accepts other
-regions so the band table can grow without a schema change, but they are
-unverified.
+Only **US915** is supported, and only sub-band 2 has been exercised. The config
+schema rejects any other `region` rather than accept it: the radio side only
+has the US915 band and datarate table, so another region would transmit on
+US915 frequencies. Each new region needs its band wired in `lorawan.cpp` and a
+hardware run before the schema allows it.
+
+The component also needs **ESP32 with the Arduino framework** (RadioLib uses
+the Arduino SPI library). ESPHome defaults ESP32 to ESP-IDF, so set
+`framework: type: arduino`; the schema rejects other platforms and frameworks
+at config time.
 
 ## License
 
