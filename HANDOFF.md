@@ -105,10 +105,9 @@ Established through prior research; treat as given.
 4. **MSB key order.** RadioLib takes DevEUI / JoinEUI / AppKey in MSB order,
    matching the ChirpStack UI. Config hex is MSB.
 5. **Region/sub-band must match the gateway.** US915 sub-band 2 is the only
-   exercised band, and US915 is the only region the schema accepts (the C++
-   hardcodes the US915 band). A wrong channel mask = the device transmits
-   joins on channels the gateway never hears = a "won't join" that is not
-   auth.
+   exercised band; EU868 and AU915 are accepted from RadioLib's band tables but
+   have never transmitted. A wrong channel mask = the device transmits joins
+   on channels the gateway never hears = a "won't join" that is not auth.
 
 ## What's in the scaffold
 

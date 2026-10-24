@@ -252,11 +252,18 @@ which is not implemented; local build avoids it.
 
 ## Region support
 
-Only **US915** is supported, and only sub-band 2 has been exercised. The config
-schema rejects any other `region` rather than accept it: the radio side only
-has the US915 band and datarate table, so another region would transmit on
-US915 frequencies. Each new region needs its band wired in `lorawan.cpp` and a
-hardware run before the schema allows it.
+| `region` | `sub_band` | Run on hardware |
+|---|---|---|
+| `US915` | 1–8 (default 2) | yes, sub-band 2 |
+| `AU915` | 1–8 (default 2) | no |
+| `EU868` | not used (rejected) | no |
+
+The bands are RadioLib's own tables, and the uplink data rate comes from them:
+each uplink takes the slowest rate whose payload limit (after dwell time and
+any queued MAC answers) fits. `AU915` and `EU868` compile and validate but have
+never transmitted; the config validation and the boot log both warn. Testing
+one needs a gateway on that region's plan, and transmitting `EU868` outside a
+region that allows it is not legal. Any other region is rejected.
 
 The component runs on **ESP32** under either the Arduino or the ESP-IDF
 framework: RadioLib talks to the radio through ESPHome's own SPI and GPIO.

@@ -1,3 +1,5 @@
+import logging
+
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome import automation, pins
@@ -62,10 +64,15 @@ CONF_TXEN_PIN = "txen_pin"
 # on this string to construct the right module.
 RADIO_CHIPS = ["sx1276", "sx1278", "sx1262"]
 
-# The C++ side only wires the US915 band (and the US915 datarate table), so any
-# other region would transmit on US915 frequencies. Reject it here until its
-# band is actually supported.
-REGIONS = ["US915"]
+_LOGGER = logging.getLogger(__name__)
+
+# Bands wired in init_radio_(). Only US915 (sub-band 2) has been run on
+# hardware; the others are RadioLib's own band tables, compile-checked only.
+REGIONS = ["US915", "EU868", "AU915"]
+UNTESTED_REGIONS = ["EU868", "AU915"]
+# Fixed-channel plans select an 8-channel group with sub_band; EU868's channels
+# come from the network instead.
+SUB_BAND_REGIONS = ["US915", "AU915"]
 
 
 def _hex_of_len(nibbles):
@@ -130,6 +137,22 @@ RADIO_SCHEMA = cv.All(cv.Schema(
     _validate_irq_pins)
 
 
+def _validate_region(config):
+    region = config[CONF_REGION]
+    if region in SUB_BAND_REGIONS:
+        config.setdefault(CONF_SUB_BAND, 2)
+    elif CONF_SUB_BAND in config:
+        raise cv.Invalid(f"{region} has no sub-bands; remove sub_band", path=[CONF_SUB_BAND])
+    else:
+        config[CONF_SUB_BAND] = 0
+    if region in UNTESTED_REGIONS:
+        _LOGGER.warning(
+            "lorawan region %s has never been run on hardware with this "
+            "component; only US915 has", region
+        )
+    return config
+
+
 def _validate_deep_sleep_class(config):
     # Class C exists to keep the receiver open between uplinks; asleep, there
     # is no receiver.
@@ -144,7 +167,7 @@ CONFIG_SCHEMA = cv.All(
         {
             cv.GenerateID(): cv.declare_id(LoRaWANComponent),
             cv.Optional(CONF_REGION, default="US915"): cv.one_of(*REGIONS, upper=True),
-            cv.Optional(CONF_SUB_BAND, default=2): cv.int_range(min=0, max=8),
+            cv.Optional(CONF_SUB_BAND): cv.int_range(min=0, max=8),
             cv.Required(CONF_DEV_EUI): _hex_of_len(16),
             cv.Required(CONF_JOIN_EUI): _hex_of_len(16),
             cv.Required(CONF_APP_KEY): _hex_of_len(32),
@@ -167,6 +190,7 @@ CONFIG_SCHEMA = cv.All(
         }
     ).extend(cv.COMPONENT_SCHEMA),
     cv.only_on_esp32,
+    _validate_region,
     _validate_deep_sleep_class,
 )
 
