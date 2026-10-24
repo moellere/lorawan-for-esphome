@@ -21,13 +21,18 @@ this is a real contribution, not a duplicate.
 
 ## Status
 
-**Pre-alpha; compiles, not yet hardware-validated.** The component builds clean
+**Pre-alpha; compiles, partly hardware-validated.** The component builds clean
 via `esphome compile` against RadioLib 7.7.1 + ESPHome 2026.6.1, gated by CI
 (`.github/workflows/ci.yml`). Every RadioLib call was verified against the pinned
 7.7.1 headers; the OTAA/nonce-restore path and the `activateOTAA` return codes are
-fixed. Remaining work is hardware-in-the-loop: the live OTAA join, uplink decode,
-and power-cycle nonce persistence (spike acceptance #2-#4) need a real TTGO LoRa32
-on the gateway.
+fixed. On hardware (Heltec V4 / SX1262, US915 sub-band 2) it has OTAA-joined,
+uplinked with an advancing FCnt, and received a downlink through `on_downlink`
+-- but on RadioLib 7.2.1, before the 7.7.1 bump (nonce-buffer reset,
+`ConfigLoRa_t` begin) and the Task WDT change (`setSleepFunction`); see *HIL
+findings* below. Remaining hardware work: re-run that on current `main`,
+confirm a join with no gateway answering no longer trips the WDT, verify
+power-cycle nonce persistence (spike acceptance #4), and cover the TTGO
+LoRa32 / SX1276 path that #2 names.
 
 ## Reuse-first, and the WireStudio boundary
 
@@ -65,7 +70,9 @@ stall. It only resurfaces if WiFi is ever made co-resident.
 
 1. ~~The component builds via `esphome compile`.~~ **Done** — CI-green.
 2. On a TTGO LoRa32 v1 (SX1276), it OTAA-joins a real LoRaWAN network
-   (US915, sub-band 2) and an uplink is received + decoded server-side. *(pending hardware)*
+   (US915, sub-band 2) and an uplink is received + decoded server-side.
+   *(Join + uplink seen on a Heltec V4 / SX1262 under RadioLib 7.2.1 -- see
+   HIL findings; TTGO / SX1276 still pending.)*
 3. WiFi/API stay responsive during the uplink burst. **Reframed:** the field
    profile is headless (no WiFi/API), so the blocking RX windows have nothing
    time-sensitive to stall — this criterion only bites a WiFi-coresident build,
