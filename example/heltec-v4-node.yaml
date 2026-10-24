@@ -11,6 +11,16 @@
 #
 # Truth tables and sources: Meshtastic variants/esp32s3/heltec_v4/variant.h,
 # MeshCore PR #1249, RadioLib discussion #1665.
+#
+# PICK THE PA PIN BY REVISION (measured 2026-10-24, HANDOFF.md "The bench V4
+# is a V4.3"): on a V4.2 the full PA is enabled by GPIO46 (GC1109 CPS); on a
+# V4.3 it is GPIO5 (KCT8103L CTX). The wrong one does not break the link at
+# bench range, it just transmits with the PA bypassed -- about 45-50 dB down
+# at the gateway -- so a board that "works on the bench" can still have no
+# range. Set pa_pin below to match the board.
+substitutions:
+  pa_pin: GPIO46   # V4.2 (GC1109). Use GPIO5 on a V4.3 (KCT8103L).
+
 esphome:
   name: heltec-v4-node
 
@@ -60,17 +70,16 @@ lorawan:
     busy_pin: GPIO13
     tcxo_voltage: 1.8
     dio2_as_rf_switch: true
-    # BENCH-PROVEN V4 recipe (OTAA join + Class C downlink validated on the
-    # Wyola workbench, 2026-08-28):
+    # Bench-proven V4 recipe (OTAA join, uplink and downlink on the Wyola
+    # workbench, 2026-08-28 and 2026-10-24):
     #   static high:  GPIO7 (VFEM LDO), GPIO2 (FEM chip enable / CSD)
     #   static low:   GPIO36 (VEXT, active low -- powers the FEM/antenna path)
-    #   per-transfer: GPIO46 (GC1109 CPS: full PA vs bypass) via txen_pin --
-    #                 RadioLib raises it only while transmitting. CPS is
-    #                 don't-care in receive, so this is not what fixed the
-    #                 August deafness (see HANDOFF.md, HIL findings 2026-10-24).
+    #   per-transfer: ${pa_pin} via txen_pin -- RadioLib raises it only while
+    #                 transmitting, so the PA is on for TX and out of the way
+    #                 for RX. V4.2: GPIO46 (GC1109 CPS). V4.3: GPIO5
+    #                 (KCT8103L CTX). Do not hold it high with setup_high: on a
+    #                 V4.3 that keeps the TX path selected while receiving.
     #   DIO2          TX/RX antenna select -- automatic (dio2_as_rf_switch)
-    # V4.3 (KCT8103L) note: TX select is CTX on GPIO5 -- if a V4.3 board stays
-    # deaf with this config, move txen_pin to GPIO5.
     setup_high: [GPIO7, GPIO2]
     setup_low: [GPIO36]
-    txen_pin: GPIO46
+    txen_pin: ${pa_pin}

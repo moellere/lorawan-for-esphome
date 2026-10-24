@@ -421,8 +421,10 @@ Two quirks worth knowing:
 as don't-care in receive -- it only selects full PA vs bypass during transmit,
 and TX/RX path select is CTX, driven by SX1262 DIO2. A static-high GPIO46 cannot
 deafen the receiver, and the gate board running 137d06e with GPIO46 (and GPIO5)
-held statically high joined at 13:51 UTC. `txen_pin: GPIO46` is still correct
-(full PA in TX, nothing in RX) but it is not what fixed the August deafness.
+held statically high joined at 13:51 UTC. `txen_pin: GPIO46` is correct **on a
+V4.2** (full PA in TX, nothing in RX), but it is not what fixed the August
+deafness, and the bench board turned out to be a V4.3, where the PA pin is
+GPIO5 (see "The bench V4 is a V4.3").
 b7da617 changed several things at once; the real cause is unrecorded. See the
 2026-10-24 HIL findings.
 
@@ -463,7 +465,7 @@ Also observed:
 - `tests/secrets.yaml` carries DevEUI `70b3d57ed0000000`, which is registered
   nowhere; a build from it cannot join. The registered V4 identity is
   `8cfd49fffeb55758` (ChirpStack app `wirestudio`).
-- ChirpStack REST is on `10.254.0.11:8090` (`:8080` is gRPC/UI). The nonce
+- ChirpStack REST is on port 8090 of the ChirpStack host (`:8080` is gRPC/UI). The nonce
   flush is `DeviceService.FlushDevNonces`; wirestudio wraps it as
   `ChirpStackClient.flush_dev_nonces()`. Server side, not this repo.
 - The GNSS-16M gate config pins 137d06e (before `setup_low`/`txen_pin`
@@ -471,11 +473,46 @@ Also observed:
   VEXT drive. It joined at 13:51 after being restored. On a V4.2 GPIO5 is
   unconnected; on a V4.3 GPIO5 is KCT8103L CTX, and high means RX bypass
   (21 dB less LNA gain), so that config would receive weaker than it could.
-  Which revision the board is has not been read off the silkscreen.
+  The board is a V4.3 by measurement; see the next section.
 
 Final state: SLOT14 restored to its gate firmware (137d06e, RadioLib 7.2.1,
 5 min uplinks), nonces flushed before the restore, joined 13:51. `main` is not
 deployed on any gate board.
+
+## The bench V4 is a V4.3: the PA pin is GPIO5 (2026-10-24)
+
+Identified by RF behaviour, not by the silkscreen (nobody has read it yet; a
+silkscreen read would only confirm). Same board (SLOT14), same gateway about
+2 m away, `main` @ ca52396, US915 sub-band 2, all builds with
+`setup_high: [GPIO7, GPIO2]`, `setup_low: [GPIO36]`, `dio2_as_rf_switch`,
+`tcxo_voltage: 1.8`. Gateway-side RSSI/SNR per uplink from ChirpStack's frame
+stream:
+
+| Build (UTC window) | PA-related pins | Joins / RX | Gateway RSSI | SNR |
+|---|---|---|---|---|
+| A, 13:35-13:39 | `txen_pin: GPIO46` | OK | -110 to -114 dBm | ~3 |
+| B, 14:31-14:35 | `txen_pin: GPIO5` | OK | **-58 to -67 dBm** | ~13 |
+| C, 14:36-14:41 | GPIO46 held high (`setup_high`), no `txen_pin` | OK, not deaf | -110 to -118 dBm | -3 to 3 |
+| gate 137d06e, 13:56-14:21 | GPIO5 + GPIO46 held high | OK | -58 to -72 dBm | ~12 |
+
+GPIO5 raised for TX is worth about 45-50 dB at the gateway; GPIO46 makes no
+difference either way. That is the V4.3 (KCT8103L) signature: GPIO5 is CTX,
+GPIO46 is not connected to the FEM. On a V4.2 the result would invert.
+
+Consequences:
+- The example now takes the PA pin from a `pa_pin` substitution (GPIO46 for a
+  V4.2, GPIO5 for a V4.3) and the README says so. A wrong pin is invisible on
+  the bench -- the link still closes at 2 m -- and costs the range.
+- Holding GPIO46 high does not deafen a V4.3 (build C joined first try and
+  received normally), which is the second half of why the August mechanism
+  could not have been right on this board.
+- Holding GPIO5 statically high (the 137d06e gate config) works at 2 m but
+  keeps the TX path selected in RX; per-transfer `txen_pin: GPIO5` is the
+  right shape. The gate config moves to v0.1.0 with `txen_pin: GPIO5`.
+- The v0.1.0 HIL runs on SLOT14 used `txen_pin: GPIO46` as briefed, so their
+  uplinks went out PA-bypassed (about -105 to -109 dBm, DR0 through 16:35 UTC). That does
+  not affect the pass/fail results, but it means ADR never had headroom to
+  raise the data rate in those runs.
 
 ## Sources
 
