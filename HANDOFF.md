@@ -21,16 +21,30 @@ this is a real contribution, not a duplicate.
 
 ## Status
 
-**Pre-alpha; compiles, hardware-validated on the Heltec V4.** The component
-builds clean via `esphome compile` against RadioLib 7.7.1 + ESPHome 2026.6.1,
-gated by CI (`.github/workflows/ci.yml`). On 2026-10-24, `main` @ ca52396
-(RadioLib 7.7.1, `ConfigLoRa_t` begin, Task WDT fed from `setSleepFunction`)
-OTAA-joined on the first attempt, uplinked every 60 s, received a downlink
-through `on_downlink`, re-joined after a chip reset with no server-side nonce
-flush, and sat through six consecutive no-gateway join failures (6.6 s blocked
-each) without a watchdog reset -- see *HIL findings (2026-10-24)* below. Still
-open on hardware: a true power cycle (only a chip reset has been pulled), and
-the TTGO LoRa32 / SX1276 path.
+**Pre-alpha, tagged `v0.1.0`.** CI compiles three configs against RadioLib
+7.7.1 + ESPHome 2026.6.1 (SX1276 and SX1262 on Arduino, SX1262 on ESP-IDF) and
+round-trips the payload codec (`.github/workflows/ci.yml`).
+
+Last hardware-validated build: `main` @ ca52396 on the Heltec V4 / SX1262,
+2026-10-24. It OTAA-joined, uplinked, received a downlink, re-joined after a
+chip reset with no nonce flush, and survived six failed joins without a
+watchdog reset (*HIL findings (2026-10-24)* below).
+
+Merged since, and **not yet run on hardware**:
+
+| PR | Change |
+|---|---|
+| #17 | Session (DevAddr, keys, FCnt) persisted in NVS and synced after every join and uplink: a reboot resumes with no join |
+| #18 | Deep sleep via ESPHome's `deep_sleep` (`deep_sleep_id`): one uplink per wake |
+| #19 | RadioLib on its own FreeRTOS task; `loop()` no longer blocks |
+| #20 | RadioLib HAL over ESPHome SPI/GPIO; ESP-IDF builds; SPI pins move to `spi:` (breaking) |
+| #21 | EU868 and AU915 (untested, warned); uplink data rate taken from the band |
+| #22 | Typed, scaled payload fields (`type`, `multiplier`) |
+
+HIL briefs for these went to the homelab session on 2026-10-24 (main @
+bdc7cca for #17-#20, then d5754bd for #21-#22). Also still open on hardware: a
+true power pull (only a chip reset has been tested) and the TTGO LoRa32 /
+SX1276 path.
 
 ## Reuse-first, and the WireStudio boundary
 
@@ -58,11 +72,10 @@ One risk dominates and must be retired before any polish: **RX-window timing
 under ESPHome's cooperative loop.** LoRaWAN class-A opens receive windows at
 RX1 (+1 s) and RX2 (+2 s) after each uplink, and RadioLib's `sendReceive()`
 blocks through them. ESPHome's `loop()` is cooperative — a long block stalls
-WiFi, the API, and every other component. The current code blocks on purpose
-to stay minimal; proving a viable timing model is the spike. **Update:** the
-headless deployment decision (no WiFi/API; see *Deployment model*) retires this
-for the shipped profile — there is nothing time-sensitive left in the loop to
-stall. It only resurfaces if WiFi is ever made co-resident.
+WiFi, the API, and every other component. **Update:** the headless deployment
+decision (no WiFi/API; see *Deployment model*) retired this for the shipped
+profile, and #19 moved RadioLib onto its own task so `loop()` no longer blocks
+at all (not yet run on hardware).
 
 **Spike acceptance:**
 
@@ -72,15 +85,15 @@ stall. It only resurfaces if WiFi is ever made co-resident.
    **Done on a Heltec V4 / SX1262** (2026-08-28 on RadioLib 7.2.1, 2026-10-24
    on `main` @ ca52396); TTGO / SX1276 still pending.
 3. WiFi/API stay responsive during the uplink burst. **Reframed:** the field
-   profile is headless (no WiFi/API), so the blocking RX windows have nothing
-   time-sensitive to stall — this criterion only bites a WiFi-coresident build,
-   which we don't ship. *(see Deployment model)*
+   profile is headless (no WiFi/API), and the radio task (#19) keeps `loop()`
+   free regardless. *(see Deployment model)*
 4. A **power cycle re-joins without a server-side nonce flush** — i.e. the
    DevNonce persistence works. *(Chip reset verified 2026-10-24: re-joined in
-   8 s with no flush. A true power pull still needs a human at Wyola.)*
+   8 s with no flush. A true power pull still needs a human at Wyola. Since
+   #17 a reboot should resume the stored session with no join at all.)*
 
-With #1 done and #3 reframed, the rest (config polish, SX1262, a compact payload
-codec, more regions) is mechanical once #2 and #4 are confirmed on hardware.
+SX1262, a compact payload, and more regions are done in code; what gates the
+spike is #2 on the TTGO and #4 with a real power pull.
 
 ## Key LoRaWAN findings — do not relitigate
 
@@ -113,25 +126,32 @@ Established through prior research; treat as given.
 
 ```
 components/lorawan/
-  __init__.py      # config schema (region, sub_band, EUIs/key, radio pins,
-                   # uplink_interval) + to_code; pins jgromes/RadioLib 7.7.1
+  __init__.py      # config schema (region, sub_band, EUIs/key, radio pins on an
+                   # spi: bus of its own, deep_sleep_id) + to_code; pins
+                   # jgromes/RadioLib 7.7.1
   esphome_hal.*    # RadioLib HAL over ESPHome SPI + GPIO (Arduino and ESP-IDF)
   sensor.py        # sensor sub-platform: bind an ESPHome sensor as a payload field
   payload.h        # field encodings (float32, scaled ints); host-testable
-  lorawan.h        # LoRaWANComponent: radio + LoRaWANNode, join/uplink, nonce pref
-  lorawan.cpp      # setup() inits radio (begin on concrete chip) + joins;
-                   # loop() interval-uplinks; nonces saved/restored via ESPPreferences
+  lorawan.h        # LoRaWANComponent; radio request/result types
+  lorawan.cpp      # setup() inits the radio and starts the radio task; loop()
+                   # queues join/uplink requests and handles results (NVS,
+                   # on_downlink); the task owns RadioLib; deep-sleep cycle
 codec/
   decodeUplink.js  # reference ChirpStack codec (FIELDS in lockstep with the bindings)
 example/
   spike-ttgo-lora32-v1.yaml     # bench config: WiFi + SX1276, keys via !secret
   field-headless.yaml           # production config: LoRaWAN-only, no WiFi/api/ota
+  heltec-v4-node.yaml           # Heltec V4 / SX1262, the HIL-validated pin map
+  multi-sensor.yaml             # several typed fields in one uplink
   lorawan-secrets.yaml.example  # per-device namespaced keys template
 tests/
-  ci-compile.yaml  # headless local-source config the CI gate compiles
-  codec/           # vectors.cpp packs with payload.h; check.js decodes with the codec
+  ci-compile.yaml         # SX1276, Arduino, deep sleep
+  ci-compile-sx1262.yaml  # SX1262 + TCXO/PA keys, Class C, send_raw, on_downlink
+  ci-compile-idf.yaml     # the SX1262 config under ESP-IDF
+  codec/                  # vectors.cpp packs with payload.h; check.js decodes
+                          # with the codec
 .github/workflows/
-  ci.yml           # esphome compile gate (pinned esphome), on push + PR
+  ci.yml           # codec round-trip + esphome compile gate (pinned esphome)
 README.md  LICENSE (MIT)  .gitignore  CLAUDE.md  HANDOFF.md (this file)
 ```
 
@@ -190,57 +210,22 @@ decodes them with `codec/decodeUplink.js` in CI. Generating the codec's
   drives the bus concurrently with the main loop and ESPHome's SPI is not
   thread-safe, a final validate rejects any other SPI device on the radio's
   bus.
-- **SX1262 path is stubbed** — `init_radio_()` branches on chip but only SX1276
-  is exercised. SX1262 needs `dio1` + `busy` (+ usually a TCXO voltage and
-  `dio2_as_rf_switch`); add those to the radio schema when you do it.
-
-## HIL findings — Heltec V4 on the Wyola workbench (2026-08-27)
-
-First hardware session against the real gateway (SLOT28 on wyola-workbench,
-ChirpStack device `8cfd49fffeb55758` "Heltec WiFi LoRa 32 V4 GNSS"). Facts,
-each verified at the gateway side by decoding `us915_1/gateway/+/event/up`
-protobufs and reading ChirpStack's device DB:
-
-- **OTAA join-requests transmit and are ACCEPTED server-side** — 69+ burned
-  dev-nonces, dev_addr allocated, join-accepts transmitted (RX1 926.9 MHz
-  SF9/500k). The MIC/keys/registration are all correct.
-- **The device hears none of them.** With the original 4-pin `setup_high`
-  the join loop hung silently; with corrected FEM pins it fails fast and
-  clean with `RADIOLIB_ERR_NO_JOIN_ACCEPT (-1116)` every cycle.
-- **TX RSSI at the gateway (~2 m away) is -52 dBm** in every working pin
-  configuration — leakage-grade for a 28 dBm PA board. Driving VEXT low with
-  the TX-path pins floating dropped it to **-122** (powered FEM blocking an
-  unselected path), which proves the pins do reach the FEM.
-- **Prime suspect: antenna missing/unseated** (u.FL) — weak TX + total RX
-  deafness + insensitivity to front-end permutations all fit. Physical check
-  pending. The V4 also has a separate GNSS u.FL; easy to confuse.
-- Pin map for both V4 FEM revisions documented in
-  `example/heltec-v4-node.yaml`; `setup_low:` was added for VEXT-class
-  active-low rails.
-- Closed-loop iteration works end to end: `esphome compile` on the dev box,
-  flash over the workbench API (esptool to SLOT28), serial monitor with
-  pattern match, gateway-side RF decode. One cycle ≈ 4 minutes.
+- **SX1276 is unexercised on hardware.** Every HIL run so far is the Heltec V4
+  / SX1262. The SX127x path (`dio0_pin`, no BUSY) compiles in CI but has never
+  joined.
 
 ## Next steps (ordered)
 
-1. ~~**Make it compile.**~~ Done — builds clean against RadioLib 7.2.1 +
-   ESPHome 2026.6.1, gated by CI (`.github/workflows/ci.yml` compiles the local
-   checkout via `tests/ci-compile.yaml`). Fixed: OTAA nonce-restore ordering,
-   the `activateOTAA` session return codes, the concrete-chip `begin()`, and the
-   Arduino SPI library dep.
-2. **Flash + join.** TTGO LoRa32 v1, real network, US915 sub-band 2. Register
-   the device + keys on your server first (MAC version 1.0.4) and flush its
-   nonces once.
-3. **Verify nonce persistence** — power-cycle, confirm re-join with no server
-   flush.
-4. **Resolve loop timing.** Largely retired by the deployment decision below:
-   field firmware runs with no WiFi/API, so the blocking RX windows have nothing
-   time-sensitive to stall (they only delay sensor polling by a couple seconds
-   per uplink). Second-core/async is only needed if WiFi is kept co-resident —
-   which the field profile does not.
-5. Then: SX1262 support, a compact payload codec, and more regions. (Downlink
-   RX is done: application downlinks captured from the uplink's RX windows and
-   surfaced via the `on_downlink` automation trigger -- port + payload bytes.)
+1. **HIL the six merged PRs** (#17-#22) on the Heltec V4: radio task, session
+   resume, deep sleep, ESP-IDF, band-driven data rate, typed payload. Briefs
+   went out 2026-10-24; fold the findings into a new *HIL findings* section.
+2. **True power pull** — cut power right after an uplink, confirm the session
+   resumes with no join and FCnt does not go backwards.
+3. **TTGO LoRa32 v1 / SX1276** — first join on the SX127x path, US915 sub-band 2.
+   Register the device (MAC version 1.0.4) and flush its nonces once first.
+4. **EU868 / AU915 on a real gateway** of that plan; drop their untested
+   warning once each has joined.
+5. **Upstreaming** to ESPHome as an official component, once 1-3 pass.
 
 ## Deployment model (decided)
 
@@ -254,35 +239,15 @@ on the serial log. WiFi only earns its keep on the bench.
 
 ### Open considerations
 
-- **Deep sleep (implemented; not yet run on hardware).** The real power lever.
-  Built as `deep_sleep_id` pointing at ESPHome's own `deep_sleep` component
-  rather than the `deep_sleep: true` sketched below, so wake sources, shutdown
-  hooks and `deep_sleep.prevent` come from upstream; see the README. The plan
-  as originally written:
-  It wipes RAM, so the model flips from an interval in `loop()` to a one-shot in
-  `setup()` then sleep, and the **session** must persist, not just the nonces
-  (done: both are saved to NVS and synced after every join and uplink):
-
-      setup(): init radio -> restore nonces+session -> activateOTAA()
-        SESSION_RESTORED -> resume at saved FCnt, no join airtime (steady state)
-        NEW_SESSION      -> first boot / session lost: joined fresh
-        error            -> backoff, sleep, retry next wake
-      read sensor(s) -> uplink (blocking RX) -> save nonces+session
-      radio_->sleep() -> global_preferences->sync() -> esp_deep_sleep_start()
-
-  RadioLib `getBufferSession`/`setBufferSession` (size
-  `RADIOLIB_LORAWAN_SESSION_BUF_SIZE`) hold DevAddr, session keys, and the frame
-  counters; FCntUp must stay monotonic across wakes or the server drops frames as
-  replays. Gotchas: (1) `ESPPreferences` batches writes — call
-  `global_preferences->sync()` before sleeping or the FCnt is lost; (2) sleep the
-  SX127x (`PhysicalLayer::sleep()`, virtual) separately from the ESP or it idles
-  at ~1.5 mA; (3) sensors update on their own interval — a one-shot must
-  force-read bound sensors and wait before packing the payload, or the first
-  cycle uplinks a stale/zero value. Config: `deep_sleep: true` (default false)
-  with the uplink interval as the sleep period. Independent of wifi-on-demand;
-  the only shared surface is that any Class-A downlink (incl. that feature)
-  arrives only in the RX window after a scheduled uplink — up-to-one-interval
-  latency.
+- **Deep sleep (implemented, #18; not yet run on hardware).** The real power
+  lever. Built as `deep_sleep_id` pointing at ESPHome's own `deep_sleep`, so wake
+  sources, shutdown hooks and `deep_sleep.prevent` come from upstream; see the
+  README for the rules. Each wake: restore nonces + session -> `activateOTAA()`
+  (`SESSION_RESTORED`, no join airtime, in steady state) -> wait up to 10 s for
+  the bound sensors -> one uplink -> save + `global_preferences->sync()` ->
+  `radio_->sleep()` (an SX127x left in standby idles at ~1.5 mA) ->
+  `begin_sleep()`. FCntUp must stay monotonic across wakes or the server drops
+  frames as replays, which is why every save is synced at once.
 
 - **Board power floor (TTGO LoRa32 v1.6.1).** Even with deep sleep this board
   does not reach µA: the AMS1117 LDO quiescent (~5-10 mA) and the power LED
@@ -317,10 +282,44 @@ on the serial log. WiFi only earns its keep on the bench.
 esphome compile example/spike-ttgo-lora32-v1.yaml
 ```
 
-Conventions live in [`CLAUDE.md`](CLAUDE.md). Pin a commit when consuming this
-repo elsewhere — never `main`.
+```bash
+# what CI runs
+g++ -std=c++17 -Icomponents/lorawan -o /tmp/vectors tests/codec/vectors.cpp
+/tmp/vectors | node tests/codec/check.js
+esphome compile tests/ci-compile.yaml   # also -sx1262, -idf
+```
 
-## RESOLVED (2026-08-28): the V4 deafness was PA_TX_EN, not the antenna
+Conventions live in [`CLAUDE.md`](CLAUDE.md). Pin a tag (`v0.1.0`) or a commit
+when consuming this repo elsewhere — never `main`.
+
+## HIL findings — Heltec V4 on the Wyola workbench (2026-08-27)
+
+First hardware session against the real gateway (SLOT28 on wyola-workbench,
+ChirpStack device `8cfd49fffeb55758` "Heltec WiFi LoRa 32 V4 GNSS"). Facts,
+each verified at the gateway side by decoding `us915_1/gateway/+/event/up`
+protobufs and reading ChirpStack's device DB:
+
+- **OTAA join-requests transmit and are ACCEPTED server-side** — 69+ burned
+  dev-nonces, dev_addr allocated, join-accepts transmitted (RX1 926.9 MHz
+  SF9/500k). The MIC/keys/registration are all correct.
+- **The device hears none of them.** With the original 4-pin `setup_high`
+  the join loop hung silently; with corrected FEM pins it fails fast and
+  clean with `RADIOLIB_ERR_NO_JOIN_ACCEPT (-1116)` every cycle.
+- **TX RSSI at the gateway (~2 m away) is -52 dBm** in every working pin
+  configuration — leakage-grade for a 28 dBm PA board. Driving VEXT low with
+  the TX-path pins floating dropped it to **-122** (powered FEM blocking an
+  unselected path), which proves the pins do reach the FEM.
+- **Prime suspect: antenna missing/unseated** (u.FL) — weak TX + total RX
+  deafness + insensitivity to front-end permutations all fit. Physical check
+  pending. The V4 also has a separate GNSS u.FL; easy to confuse.
+- Pin map for both V4 FEM revisions documented in
+  `example/heltec-v4-node.yaml`; `setup_low:` was added for VEXT-class
+  active-low rails.
+- Closed-loop iteration works end to end: `esphome compile` on the dev box,
+  flash over the workbench API (esptool to SLOT28), serial monitor with
+  pattern match, gateway-side RF decode. One cycle ≈ 4 minutes.
+
+## 2026-08-28: the V4 deafness fix (mechanism later disproved)
 
 The user called it: the board RF'd fine under previous firmware, so hardware
 was never the suspect. Root cause -- **GPIO46 (GC1109 `PA_TX_EN`) is a
@@ -389,7 +388,7 @@ boot's reset reason was `rst:0x15 (USB_UART_CHIP_RESET)`, i.e. the harness.
 Also observed:
 - `loop()` still blocks 6.6 s on a failed join and 1.4 s on an uplink with RX
   windows. The sleep callback keeps the WDT fed; other components starve for
-  that long. Headless profile only, as decided.
+  that long. (Since moved to a radio task, #19.)
 - `tests/secrets.yaml` carries DevEUI `70b3d57ed0000000`, which is registered
   nowhere; a build from it cannot join. The registered V4 identity is
   `8cfd49fffeb55758` (ChirpStack app `wirestudio`).
