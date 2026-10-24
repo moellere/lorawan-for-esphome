@@ -26,26 +26,17 @@ CI compiles three configs against RadioLib
 7.7.1 + ESPHome 2026.6.1 (SX1276 and SX1262 on Arduino, SX1262 on ESP-IDF) and
 round-trips the payload codec (`.github/workflows/ci.yml`).
 
-Last hardware-validated build: `main` @ ca52396 on the Heltec V4 / SX1262,
-2026-10-24. It OTAA-joined, uplinked, received a downlink, re-joined after a
-chip reset with no nonce flush, and survived six failed joins without a
-watchdog reset (*HIL findings (2026-10-24)* below).
+Hardware-validated on 2026-10-24: **v0.1.0 itself**, on the Heltec V4 /
+SX1262 (US915 sub-band 2), Arduino and ESP-IDF. Session resume across a chip
+reset and a true power pull, deep sleep, the radio task, the band-driven data
+rate, typed payload fields and Class C (RxC delivery within a second) all
+passed; see *HIL findings — v0.1.0*
+below. Still open on hardware: the TTGO LoRa32 / SX1276 path and EU868 / AU915.
 
-Merged since, and **not yet run on hardware**:
-
-| PR | Change |
-|---|---|
-| #17 | Session (DevAddr, keys, FCnt) persisted in NVS and synced after every join and uplink: a reboot resumes with no join |
-| #18 | Deep sleep via ESPHome's `deep_sleep` (`deep_sleep_id`): one uplink per wake |
-| #19 | RadioLib on its own FreeRTOS task; `loop()` no longer blocks |
-| #20 | RadioLib HAL over ESPHome SPI/GPIO; ESP-IDF builds; SPI pins move to `spi:` (breaking) |
-| #21 | EU868 and AU915 (untested, warned); uplink data rate taken from the band |
-| #22 | Typed, scaled payload fields (`type`, `multiplier`) |
-
-#23 is docs plus `send_raw` registered `synchronous=True`; no behaviour
-change. The plan to validate all of it is *HIL plan — v0.1.0* below. Also
-still open on hardware: a true power pull (only a chip reset has been tested)
-and the TTGO LoRa32 / SX1276 path.
+Two rules came out of that run (both in the README): switching a board from
+**ESP-IDF to Arduino** loses the stored nonces and session (different NVS
+partition layout), and the first join after an esptool flash fails because the
+ESP32-S3 resets twice inside the join's RX windows.
 
 ## Reuse-first, and the WireStudio boundary
 
@@ -211,21 +202,32 @@ decodes them with `codec/decodeUplink.js` in CI. Generating the codec's
   drives the bus concurrently with the main loop and ESPHome's SPI is not
   thread-safe, a final validate rejects any other SPI device on the radio's
   bus.
+- **ESP-IDF -> Arduino loses NVS.** ESPHome's IDF partition table puts `nvs`
+  at 0xf90000 (0x70000); the Arduino table has `eeprom`/`spiffs` there and
+  `nvs` at 0xfa0000 (0x60000). Arduino -> IDF carries the session over (IDF's
+  window contains Arduino's pages); IDF -> Arduino does not (HIL 4b). Treat it
+  as a full erase: flush DevNonces server-side.
+- **First join after an esptool flash fails.** esptool's post-write reset over
+  USB-Serial/JTAG resets the ESP32-S3 twice; the app sends a join-request and
+  is reset inside the RX windows before the component has persisted the
+  advanced DevNonce, so the second boot reuses it and the server rejects it.
+  The next interval joins. The nonce is saved when `activateOTAA()` returns;
+  saving it right after TX would need a hook RadioLib does not expose.
 - **SX1276 is unexercised on hardware.** Every HIL run so far is the Heltec V4
   / SX1262. The SX127x path (`dio0_pin`, no BUSY) compiles in CI but has never
   joined.
 
 ## Next steps (ordered)
 
-1. **Run the *HIL plan — v0.1.0*** (below) on the Heltec V4. Write the results
-   up as *HIL findings — v0.1.0* in the shape of the ca52396 section, fix what
-   fails, and decide from test 4 whether the README needs a "framework switch
-   means a nonce flush" rule.
-2. **TTGO LoRa32 v1 / SX1276** — first join on the SX127x path, US915 sub-band 2.
+1. **TTGO LoRa32 v1 / SX1276** — first join on the SX127x path, US915 sub-band 2.
    Register the device (MAC version 1.0.4) and flush its nonces once first.
+2. **Heltec V4.3 PA pin.** SLOT14 behaves like a V4.3 (KCT8103L): with
+   `txen_pin: GPIO46` the PA is bypassed (gateway RSSI -105 at ~2 m). The
+   example should select the TX-enable pin by board revision (V4.2: GPIO46,
+   V4.3: GPIO5). The homelab session is measuring the A/B and opening that PR.
 3. **EU868 / AU915 on a real gateway** of that plan; drop their untested
    warning once each has joined.
-4. **Upstreaming** to ESPHome as an official component, once 1-2 pass.
+4. **Upstreaming** to ESPHome as an official component, once 1 passes.
 
 Loose ends from the session that produced v0.1.0:
 
@@ -240,63 +242,134 @@ Loose ends from the session that produced v0.1.0:
   registry was blocked; CI was the compile gate) and could not push tags. A
   session on the workbench VM has neither limit.
 
-## HIL plan — v0.1.0
+## HIL findings — v0.1.0 on the Heltec V4 (2026-10-24)
 
-Heltec V4 in SLOT14 on the Wyola workbench, same harness as the 2026-10-24 run.
-Nothing below has run on hardware.
+The v0.1.0 plan (eight tests) was run in full; all eight passed.
 
-**Build.** `external_components: source: github://moellere/lorawan-for-esphome@v0.1.0`
-(or the local checkout). Start from `example/heltec-v4-node.yaml`: SPI pins in
-the top-level `spi:` block (`clk_pin: GPIO9`, `miso_pin: GPIO11`, `mosi_pin:
-GPIO10`), `cs_pin` under `radio:`, and the proven radio block unchanged
-(`setup_high: [GPIO7, GPIO2]`, `setup_low: [GPIO36]`, `txen_pin: GPIO46`,
-`dio2_as_rf_switch: true`, `tcxo_voltage: 1.8`). Registered DevEUI
-`8cfd49fffeb55758`; failed-join case `8cfd49fffeb5dead`. Flash **without**
-erasing NVS. SLOT14 runs 137d06e (RadioLib 7.2.1), whose nonce blob 7.7.1
-cannot read, so flush DevNonces server-side once before the first flash.
-`uplink sent` / `downlink` log at DEBUG. Arduino, `uplink_interval: 1min`,
-Class A unless a test says otherwise.
+Tests 1-4 run by the "Homelab working session", 5-8 by this session, both on
+the Wyola workbench SLOT14, all times UTC. Build: ESPHome 2026.8.1 (CI pins
+2026.6.1), `external_components` pinned `@v0.1.0` (ba7b756), RadioLib 7.7.1.
+Config from `example/heltec-v4-node.yaml`: top-level `spi:` (clk 9, miso 11,
+mosi 10), `setup_high: [GPIO7, GPIO2]`, `setup_low: [GPIO36]`, `txen_pin:
+GPIO46`, `dio2_as_rf_switch`, `tcxo_voltage: 1.8`, Class A, `uplink_interval:
+1min`, one float32 battery field unless stated. Flashed as a factory image at
+0x0 without erasing NVS except where stated; nonces flushed once before the
+first flash. Gateway-side evidence from ChirpStack's device event stream
+(MQTT `application/+/device/+/event/+`).
 
-1. **Regression.** `sx1262 begin`, `OTAA join OK (new session)`, `uplink sent
-   (N bytes, fport=1) dev_eui=8cfd49fffeb55758` every 60 s; a queued fport 10
-   `[0a 0b 0c]` arrives as `downlink fport=10 (3 bytes)`.
-2. **Loop no longer blocks (#19).** No `took a long time for an operation`
-   (ca52396 logged 6623 ms per failed join, ~1.4 s per uplink). As
-   `…dead`: `OTAA join failed: -1116` each interval, no `task_wdt`, panic or
-   reset over at least 3 failures.
-3. **Session persistence (#17).** Record each `rst:0x..`.
-   a. Chip reset after a join and 2+ uplinks: `OTAA join OK (restored)`, no
-      join-request at the gateway, same DevAddr, `f_cnt_up` continues.
-   b. True power pull within ~10 s of an `uplink sent`: `restored`, same
-      DevAddr, FCnt not backwards.
-   c. Power pull after a fresh join, before the first uplink: `restored`.
-4. **ESP-IDF (#20).** Same YAML with `framework: type: esp-idf`, flashed over
-   the Arduino build without erasing. Record the first boot: `restored` means
-   IDF read the Arduino NVS; otherwise the join is silently rejected (`-1116`,
-   DevNonce reuse), so flush once and let it join. Then repeat 1 and 3a.
-5. **Deep sleep (#18).** `deep_sleep: {id: deep_sleep_1, sleep_duration: 2min}`
-   and `lorawan: deep_sleep_id: deep_sleep_1`. Per wake: `restored`, `uplink
-   sent`, sleep; one uplink per 2 min, FCnt +1 per wake, no join after the
-   first. A downlink queued between wakes lands in the next wake. As `…dead`:
-   `OTAA join failed` then `not joined; sleeping, the next wake retries the
-   join`, never stuck awake. Native-USB serial re-enumerates each wake.
-6. **Data rate (#21).** US915 payload limits DR0 11 B, DR1 53 B, DR2 125 B,
-   DR3 242 B. 4 bytes: DR0 every uplink, even after ADR, no `uplink failed:
-   -4`. 12 bytes (three `float32`): DR1. 60-byte `send_raw`: DR2 (the old
-   table picked DR3). Optional: an 11-byte payload goes DR1 on the uplink
-   after a LinkADRReq (FOpts). No untested-region warning on US915.
-7. **Compact payload (#22).** Bind battery `uint16` ×1000, a template
-   returning 21.37 as `int16` ×100, and a template returning `NAN` as
-   `uint8`. Boot log `payload: 3 fields, 5 bytes`; `frm_payload` = battery mV
-   LE, `59 08`, `ff`; DR0. Decode locally with `codec/decodeUplink.js`
-   (`tests/codec/check.js` shows how), not by editing the shared ChirpStack
-   device profile: expect `{battery: ~3.x, t: 21.37, n: null}`.
-8. **Class C on the radio task (optional).** `device_class: C`, no deep sleep:
-   after the first post-join uplink, a queued downlink arrives as `class C
-   downlink fport=10 (3 bytes)` within seconds.
+1. **Regression (Arduino) -- pass.** Post-flash boot joined at 15:53:34
+   (DevAddr 00678317); uplinks 15:54:41, 15:55:41, 15:56:41 fCnt 0-2, DR0,
+   4 B. fport 10 `[0a 0b 0c]` queued 15:54: `downlink fport=10 (3 bytes)` and
+   `on_downlink fired`. `Setup lorawan took 62ms`.
+2. **Loop no longer blocks (#19) -- pass.** As `8cfd49fffeb5dead` (reset
+   16:05:24, `stored session not usable (-1120), joining fresh`): `OTAA join
+   failed: -1116` at 16:05:44, 16:06:44, 16:07:44, 16:08:44, 16:09:43. No
+   `took a long time for an operation` anywhere in the run on either
+   framework (ca52396 logged 6.6 s per failed join and 1.4 s per uplink), no
+   `task_wdt`, no panic, no reset.
+3. **Session persistence (#17).**
+   a. Chip reset (`rst:0x15`) -- pass on Arduino (15:57:50: `OTAA join OK
+      (restored)`, fCnt 4->5 on 00678317, no join-request) and on ESP-IDF
+      (16:20:51: restored, fCnt 8->9 on 0125cae4).
+   b. True power pull -- pass. Uplink fCnt 13 at 16:27:04; VBUS cut
+      16:27:11-16:27:18 (`uhubctl -l 1-1.2 -p 1 -a off/on` on wyolora; both
+      devices on that hub vanished, battery ADC read ~0.04 V); next uplink
+      fCnt 14 at 16:28:22 on 0125cae4, no join.
+   c. Power pull after a fresh join, before any uplink -- pass. Nonces flushed,
+      flashed with erase; JOIN 16:30:59 (0193901d), VBUS cut 16:31:13-16:31:20;
+      first uplink fCnt 0 at 16:32:24 on 0193901d, no join-request.
+4. **ESP-IDF (#20) -- pass, best case.** IDF image flashed over the Arduino
+   build at 16:17:25 without erasing. Arduino's last uplink fCnt 4 at 16:17:19,
+   IDF's first fCnt 5 at 16:18:45, same DevAddr 0125cae4, no join: IDF reads
+   the Arduino build's NVS. No flush rule needed in this direction; the
+   reverse is 4b.
+   Test 1 repeated on IDF: downlink at 16:22:05 + `on_downlink`; `Setup
+   lorawan took 67ms`.
+4b. **ESP-IDF -> Arduino (reverse of test 4) -- session and nonces lost.**
+   Registered IDF build (session 00ab1549, fCnt 1 at 17:20:42); Arduino build
+   flashed over it at 17:21:10 without erasing, same keys. It came up with
+   DevNonce 0: nonces 0, 0 (double reset), 1 rejected as "already used" at
+   17:21:05, 17:21:07, 17:22:07; no `stored session not usable` line, so the
+   nonce blob was not found at all. Cause: ESPHome's partition tables differ.
+   ESP-IDF: `nvs` at 0xf90000, 0x70000 long. Arduino: `eeprom` 0xf90000,
+   `spiffs` 0xf91000, `nvs` at 0xfa0000, 0x60000 long. NVS allocates pages
+   from the start of its partition, so IDF's data lives in the 64 KiB that
+   Arduino does not scan; Arduino's data lives inside IDF's window, which is
+   why Arduino -> IDF works. Rule: switching ESP-IDF -> Arduino is a
+   full-erase equivalent; flush DevNonces server-side (or wait for the
+   restarted counter to pass the old nonces, one interval each).
+5. **Deep sleep (#18, ESP-IDF, typed 5-byte payload) -- pass.** `sleep_duration:
+   2min`, flashed 16:38:00 over the IDF build without erasing. Wakes at
+   16:38:11, 16:40:19, 16:42:23: each `uplink sent (5 bytes)` then `Beginning
+   sleep` / `Sleeping for 120000000us`; fCnt 6, 7, 8 on 0193901d, no
+   join-request on any wake. Downlink queued 16:38:57 (between wakes) arrived
+   in the 16:40:19 wake: `downlink fport=10 (3 bytes)`, `on_downlink fired`,
+   TXACK at the gateway.
+   Failed-join case (`8cfd49fffeb5dead`, same deep-sleep config, flashed
+   16:50:10): wakes 16:50:15 and 16:52:2x each logged `OTAA join failed:
+   -1116`, `not joined; sleeping, the next wake retries the join`, `Beginning
+   sleep`: one join attempt per wake (~129 s apart), never stuck awake.
+   Also observed: an ESP32-S3 on USB-Serial/JTAG drops off the USB bus while
+   asleep, so the slot reads `absent` for ~115 s of each cycle, the first
+   ~1-2 s of every wake's log are lost before the slot proxy reattaches
+   (`rst:` line and `OTAA join OK (restored)` not captured; the gateway's
+   fCnt continuity is the evidence), and flashing out of a deep-sleep build
+   must hit the ~4-8 s wake window.
 
-Afterwards restore SLOT14 to its gate firmware (137d06e), flushing nonces
-before the restore.
+6. **Data rate from the band (#21, Arduino) -- pass.** Three `float32` fields
+   (12 B) plus a 60-byte `lorawan.send_raw` on fport 10 every 150 s. Joined
+   17:23:07 (00623c63). 12 B uplinks at **DR1** (fCnt 0, 1, 3 at 17:24:07,
+   17:25:07, 17:26:09), the 60 B uplink at **DR2** (fCnt 2, 17:25:09, bytes
+   `00..3b`), and every 4 B / 5 B uplink in the whole run at **DR0** with
+   `adr: true` throughout. No `uplink failed: -4`; no untested-region warning
+   on US915.
+7. **Compact payload (#22, ESP-IDF, from the deep-sleep build) -- pass.** Boot
+   log `payload: 3 fields, 5 bytes`; `frm_payload` `2c005908ff` /
+   `35005908ff` at DR0 = battery 0x002c / 0x0035 mV (uint16 x1000; the ADC
+   pin reads ~0.04 V on this board), `5908` = 2137 (int16 x100 of 21.37), `ff`
+   = the uint8 "no reading" code for a NaN template sensor. Decoded locally
+   with `codec/decodeUplink.js` and the matching `FIELDS`:
+   `{battery: 0.044, t: 21.37, n: null}`.
+8. **Class C on the radio task (Arduino) -- pass.** Class C build flashed
+   17:26:45 over the Arduino test 6 build: `OTAA join OK (restored)` then
+   `device class C enabled` (seen on a harness reset at 17:30; the post-flash
+   boot's lines were lost as usual), uplinks continuing on 00623c63. With the
+   bench device profile still `supportsClassC: false`, a downlink queued 11 s
+   after an uplink rode the next uplink (Class A path, 17:28:31). ChirpStack
+   assigns the device class **at join time** from the profile, so enabling
+   Class C on the profile did not change a restored session (`classEnabled`
+   stayed `CLASS_A` through two more queued downlinks, both delivered on the
+   following uplink). After a nonce flush and a flash with erase: JOIN
+   18:20:03 (01d339ff), `classEnabled: CLASS_C`, uplink fCnt 0 at 18:21:03,
+   downlink queued 18:21:14.35, TXACK 18:21:14, device `class C downlink
+   fport=10 (3 bytes)` + `on_downlink fired` at 18:21:14.88. The RxC poll on
+   the radio task delivers within a second, 11 s outside any Class A window.
+
+Also observed, explained: the first join after an esptool flash fails, and the
+server sees the same DevNonce twice ~2-3 s apart (16:29:57/16:29:59 and
+17:17:40/17:17:43; the gateway is a single Wyolora gateway). esptool's
+post-write "hard reset" over USB-Serial/JTAG resets the ESP32-S3 twice: the
+app boots, sends a join-request (DevNonce n), and is reset again
+(`rst:0x3 (RTC_SW_SYS_RST)`) inside the join's RX windows. RadioLib advances
+the DevNonce in RAM right after TX, but the component persists it only when
+`activateOTAA()` returns, so the second boot reuses n, ChirpStack logs
+"DevNonce has already been used", the device logs `-1116`, and the next
+interval joins with n+1. Harmless in the field (a reset inside a 6 s window),
+and the same mechanism behind the 2026-08-28 "first join after power-up fails"
+quirk. The one real consequence: a join-request that the server accepted
+(DevAddr allocated) is abandoned, which is just an orphan session server-side.
+
+Also observed: the ChirpStack codec on that profile expects 12 bytes (the GNSS
+gate layout), so every 4 B and 5 B test uplink logged an `UPLINK_CODEC` error
+server-side. Expected; not the component.
+
+Board at handover (18:25): SLOT14 on the v0.1.0 Arduino Class C build
+(`device_class: C`, 1 min, one float32 field), DevEUI `8cfd49fffeb55758`,
+fresh session 01d339ff after a full erase, nonces flushed 18:18, and the
+device profile temporarily set to Class C for test 8 (to be reverted to
+Class A before a Class A build goes on it). Handed to the homelab session,
+which replaces the 137d06e gate firmware with a v0.1.0 gate config instead of
+restoring it.
 
 ## Deployment model (decided)
 
