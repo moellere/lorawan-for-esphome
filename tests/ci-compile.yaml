@@ -28,8 +28,15 @@ sensor:
     lorawan_id: lw
     sensor: battery
 
+# Exercises the deep-sleep cycle (USE_DEEP_SLEEP); ci-compile-sx1262.yaml
+# covers the interval path.
+deep_sleep:
+  id: deep_sleep_1
+  sleep_duration: 5min
+
 lorawan:
   id: lw
+  deep_sleep_id: deep_sleep_1
   region: US915
   sub_band: 2
   dev_eui: !secret dev_eui

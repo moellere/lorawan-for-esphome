@@ -250,7 +250,11 @@ on the serial log. WiFi only earns its keep on the bench.
 
 ### Open considerations
 
-- **Deep sleep (planned; preferred for battery/solar).** The real power lever.
+- **Deep sleep (implemented; not yet run on hardware).** The real power lever.
+  Built as `deep_sleep_id` pointing at ESPHome's own `deep_sleep` component
+  rather than the `deep_sleep: true` sketched below, so wake sources, shutdown
+  hooks and `deep_sleep.prevent` come from upstream; see the README. The plan
+  as originally written:
   It wipes RAM, so the model flips from an interval in `loop()` to a one-shot in
   `setup()` then sleep, and the **session** must persist, not just the nonces
   (done: both are saved to NVS and synced after every join and uplink):

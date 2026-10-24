@@ -1,7 +1,9 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome import automation, pins
-from esphome.const import CONF_ID, CONF_TRIGGER_ID
+from esphome.components import deep_sleep
+from esphome.const import CONF_ID, CONF_RUN_DURATION, CONF_SLEEP_DURATION, CONF_TRIGGER_ID
+from esphome.final_validate import full_config
 
 CODEOWNERS = ["@moellere"]
 # sensor bindings are an optional sub-platform; the component works without any.
@@ -21,6 +23,7 @@ SendRawAction = lorawan_ns.class_("SendRawAction", automation.Action)
 CONF_LORAWAN_ID = "lorawan_id"
 CONF_ON_DOWNLINK = "on_downlink"
 CONF_DEVICE_CLASS = "device_class"
+CONF_DEEP_SLEEP_ID = "deep_sleep_id"
 CONF_F_PORT = "f_port"
 CONF_PAYLOAD = "payload"
 
@@ -117,6 +120,14 @@ RADIO_SCHEMA = cv.All(
     cv.has_none_or_all_keys(CONF_SCK_PIN, CONF_MISO_PIN, CONF_MOSI_PIN),
 )
 
+def _validate_deep_sleep_class(config):
+    # Class C exists to keep the receiver open between uplinks; asleep, there
+    # is no receiver.
+    if CONF_DEEP_SLEEP_ID in config and config[CONF_DEVICE_CLASS] == "C":
+        raise cv.Invalid("device_class C cannot be combined with deep_sleep_id")
+    return config
+
+
 # ESP32 + Arduino only: init_radio_() uses the Arduino SPI.begin(sck, miso,
 # mosi, ss). ESPHome defaults ESP32 to ESP-IDF, and without these checks that
 # build fails deep inside RadioLib instead of at config time.
@@ -137,6 +148,11 @@ CONFIG_SCHEMA = cv.All(
             # uplink's RX window. Class B (beaconing) is not supported by RadioLib.
             cv.Optional(CONF_DEVICE_CLASS, default="A"): cv.one_of("A", "C", upper=True),
             cv.Required(CONF_RADIO): RADIO_SCHEMA,
+            # One uplink per wake: join or resume the stored session, wait for
+            # the bound sensors, uplink, then hand over to this deep_sleep.
+            # Its sleep_duration sets the uplink cadence; uplink_interval only
+            # applies when this is not set.
+            cv.Optional(CONF_DEEP_SLEEP_ID): cv.use_id(deep_sleep.DeepSleepComponent),
             cv.Optional(CONF_ON_DOWNLINK): automation.validate_automation(
                 {cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(DownlinkTrigger)}
             ),
@@ -144,7 +160,31 @@ CONFIG_SCHEMA = cv.All(
     ).extend(cv.COMPONENT_SCHEMA),
     cv.only_on_esp32,
     cv.only_with_arduino,
+    _validate_deep_sleep_class,
 )
+
+
+def _final_validate(config):
+    if CONF_DEEP_SLEEP_ID not in config:
+        return config
+    fconf = full_config.get()
+    ds = fconf.get_config_for_path(fconf.get_path_for_id(config[CONF_DEEP_SLEEP_ID])[:-1])
+    if CONF_RUN_DURATION in ds:
+        raise cv.Invalid(
+            "deep_sleep run_duration must not be set when lorawan drives sleep: "
+            "it could put the device to sleep in the middle of a join or uplink",
+            path=[CONF_DEEP_SLEEP_ID],
+        )
+    if CONF_SLEEP_DURATION not in ds:
+        raise cv.Invalid(
+            "deep_sleep needs a sleep_duration when lorawan drives sleep: it is "
+            "what schedules the next uplink",
+            path=[CONF_DEEP_SLEEP_ID],
+        )
+    return config
+
+
+FINAL_VALIDATE_SCHEMA = _final_validate
 
 
 async def to_code(config):
@@ -187,6 +227,9 @@ async def to_code(config):
     cg.add(var.set_uplink_interval(config[CONF_UPLINK_INTERVAL]))
     cg.add(var.set_device_class(config[CONF_DEVICE_CLASS]))
     cg.add(var.set_credentials(config[CONF_JOIN_EUI], config[CONF_DEV_EUI], config[CONF_APP_KEY]))
+    if CONF_DEEP_SLEEP_ID in config:
+        ds = await cg.get_variable(config[CONF_DEEP_SLEEP_ID])
+        cg.add(var.set_deep_sleep(ds))
 
     for conf in config.get(CONF_ON_DOWNLINK, []):
         trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID])
