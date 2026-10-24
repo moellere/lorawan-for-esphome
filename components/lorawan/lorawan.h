@@ -1,9 +1,13 @@
 #pragma once
 
+#include "esphome/core/defines.h"
 #include "esphome/core/component.h"
 #include "esphome/core/automation.h"
 #include "esphome/core/preferences.h"
 #include "esphome/components/sensor/sensor.h"
+#ifdef USE_DEEP_SLEEP
+#include "esphome/components/deep_sleep/deep_sleep_component.h"
+#endif
 
 #include <RadioLib.h>
 
@@ -59,6 +63,9 @@ class LoRaWANComponent : public Component {
                        const std::string &app_key);
 
   void set_device_class(const std::string &cls) { this->device_class_ = cls; }
+#ifdef USE_DEEP_SLEEP
+  void set_deep_sleep(deep_sleep::DeepSleepComponent *ds) { this->deep_sleep_ = ds; }
+#endif
 
   void add_payload_field(sensor::Sensor *s) { this->fields_.push_back(s); }
   void add_on_downlink_trigger(DownlinkTrigger *t) { this->downlink_triggers_.push_back(t); }
@@ -131,6 +138,13 @@ class LoRaWANComponent : public Component {
 
   ESPPreferenceObject nonces_pref_;
   ESPPreferenceObject session_pref_;
+
+#ifdef USE_DEEP_SLEEP
+  void deep_sleep_cycle_();
+  deep_sleep::DeepSleepComponent *deep_sleep_{nullptr};
+  uint32_t cycle_start_{0};
+  bool cycle_done_{false};
+#endif
 };
 
 // lorawan.send_raw action: fPort plus a templatable byte vector, so a lambda

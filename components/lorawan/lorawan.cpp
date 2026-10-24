@@ -298,6 +298,14 @@ void LoRaWANComponent::poll_class_c_() {
 void LoRaWANComponent::setup() {
   ESP_LOGCONFIG(TAG, "setting up LoRaWAN...");
   if (!this->init_radio_()) {
+#ifdef USE_DEEP_SLEEP
+    // A failed component's loop() never runs, so in deep-sleep mode the device
+    // would stay awake and drain the battery. Keep loop() alive to sleep.
+    if (this->deep_sleep_ != nullptr) {
+      this->status_set_error();
+      return;
+    }
+#endif
     this->mark_failed();
     return;
   }
@@ -312,6 +320,12 @@ void LoRaWANComponent::setup() {
 }
 
 void LoRaWANComponent::loop() {
+#ifdef USE_DEEP_SLEEP
+  if (this->deep_sleep_ != nullptr) {
+    this->deep_sleep_cycle_();
+    return;
+  }
+#endif
   if (!this->joined_) {
     // Retry join no more often than the uplink interval to respect duty cycle.
     if (millis() - this->last_uplink_ < this->uplink_interval_ms_)
@@ -333,6 +347,47 @@ void LoRaWANComponent::loop() {
     this->uplink_();
 }
 
+#ifdef USE_DEEP_SLEEP
+// One uplink per wake. setup() already joined or resumed the stored session;
+// the uplink saves and syncs NVS, so all that is left is to wait for the bound
+// sensors and hand over to deep_sleep. A failed join just sleeps: the next
+// wake retries, which spaces join attempts by sleep_duration.
+void LoRaWANComponent::deep_sleep_cycle_() {
+  if (this->cycle_done_)
+    return;
+  if (this->joined_) {
+    // ESPHome runs a sensor's first poll within min(update_interval / 2, 5 s)
+    // of its setup, plus conversion time, so 10 s from the first loop() pass
+    // covers ordinary sensors; a slower one is uplinked as NaN, logged.
+    static const uint32_t SENSOR_WAIT_MS = 10000;
+    if (this->cycle_start_ == 0)
+      this->cycle_start_ = millis();
+    bool ready = true;
+    for (auto *s : this->fields_)
+      ready = ready && s->has_state();
+    if (!ready && millis() - this->cycle_start_ < SENSOR_WAIT_MS)
+      return;
+    if (!ready)
+      ESP_LOGW(TAG, "uplinking before every bound sensor reported");
+    if (this->fields_.empty())
+      ESP_LOGW(TAG, "deep sleep with no bound sensors: nothing to uplink this wake");
+    else
+      this->uplink_();
+  } else {
+    ESP_LOGW(TAG, "not joined; sleeping, the next wake retries the join");
+  }
+  this->cycle_done_ = true;
+  // RadioLib leaves the radio in standby, which idles at ~1.5 mA through the
+  // whole sleep on an SX127x; the ESP's own deep sleep does not touch it. No
+  // node means begin() failed, and the radio may not answer SPI at all.
+  if (this->node_ != nullptr)
+    this->radio_->sleep();
+  // Not manual: deep_sleep.prevent (e.g. a maintenance window) still holds the
+  // device awake, and deep_sleep retries from its own loop() once allowed.
+  this->deep_sleep_->begin_sleep();
+}
+#endif
+
 void LoRaWANComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "LoRaWAN:");
   ESP_LOGCONFIG(TAG, "  chip: %s", this->chip_.c_str());
@@ -343,6 +398,10 @@ void LoRaWANComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "  dev_eui: %016llx", (unsigned long long) this->dev_eui_);
   ESP_LOGCONFIG(TAG, "  device_class: %s", this->device_class_.c_str());
   ESP_LOGCONFIG(TAG, "  uplink_interval: %u ms", this->uplink_interval_ms_);
+#ifdef USE_DEEP_SLEEP
+  if (this->deep_sleep_ != nullptr)
+    ESP_LOGCONFIG(TAG, "  deep sleep: one uplink per wake (deep_sleep sets the cadence)");
+#endif
   ESP_LOGCONFIG(TAG, "  payload fields: %u", (unsigned) this->fields_.size());
 }
 

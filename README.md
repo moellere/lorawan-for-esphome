@@ -178,6 +178,39 @@ full erase resets them). With a stored session, a reboot or re-flash logs
 `OTAA join OK (restored)` and resumes at the saved frame counter with no join. Future low-power (deep sleep) and remote-update (WiFi-on-demand via
 downlink) directions are tracked in [HANDOFF.md](HANDOFF.md).
 
+### Deep sleep (battery)
+
+Point `lorawan` at an ESPHome `deep_sleep` and each wake does one uplink:
+
+```yaml
+deep_sleep:
+  id: deep_sleep_1
+  sleep_duration: 15min     # the uplink cadence
+
+lorawan:
+  # ...
+  deep_sleep_id: deep_sleep_1
+```
+
+Each wake resumes the stored session (or joins, the first time), waits up to
+10 s for the bound sensors to report, uplinks once through the RX windows, puts
+the radio to sleep, and hands over to `deep_sleep`. The rules:
+
+- `sleep_duration` is required and sets the cadence; `uplink_interval` is
+  ignored. `run_duration` is rejected: it could sleep the device mid-join.
+- Class A only; `device_class: C` is rejected.
+- A failed join just sleeps; the next wake retries, so join attempts are spaced
+  by `sleep_duration`.
+- Downlinks arrive only in that one uplink's RX windows, and the device sleeps
+  right after, so an `on_downlink` action with a `delay` will not finish.
+- The payload is the bound sensors. A sensor that needs a long warm-up (longer
+  than the 10 s wait) is uplinked as `NaN`, with a warning in the log.
+- `deep_sleep.prevent` still holds the device awake, e.g. for a maintenance
+  window.
+
+Deep sleep only helps as much as the board lets it: the TTGO LoRa32's
+regulator and power LED draw milliamps regardless (see HANDOFF.md).
+
 ### Webflashing and per-device builds (local build)
 
 Because these devices have no WiFi/OTA, the fleet model is **local build**: the
