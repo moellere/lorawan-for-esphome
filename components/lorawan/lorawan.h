@@ -75,8 +75,8 @@ class LoRaWANComponent : public Component {
 
  protected:
   bool init_radio_();
-  bool restore_nonces_();
-  void save_nonces_();
+  void restore_state_();
+  void save_state_();
   bool join_();
   void uplink_();
   bool transmit_(const uint8_t *data, size_t len, uint8_t f_port);
@@ -130,6 +130,7 @@ class LoRaWANComponent : public Component {
   bool joined_{false};
 
   ESPPreferenceObject nonces_pref_;
+  ESPPreferenceObject session_pref_;
 };
 
 // lorawan.send_raw action: fPort plus a templatable byte vector, so a lambda

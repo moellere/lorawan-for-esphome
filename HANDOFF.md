@@ -252,7 +252,8 @@ on the serial log. WiFi only earns its keep on the bench.
 
 - **Deep sleep (planned; preferred for battery/solar).** The real power lever.
   It wipes RAM, so the model flips from an interval in `loop()` to a one-shot in
-  `setup()` then sleep, and the **session** must persist, not just the nonces:
+  `setup()` then sleep, and the **session** must persist, not just the nonces
+  (done: both are saved to NVS and synced after every join and uplink):
 
       setup(): init radio -> restore nonces+session -> activateOTAA()
         SESSION_RESTORED -> resume at saved FCnt, no join airtime (steady state)
