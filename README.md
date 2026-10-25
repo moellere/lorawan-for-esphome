@@ -64,6 +64,16 @@ sensor:
 See [`example/spike-ttgo-lora32-v1.yaml`](example/spike-ttgo-lora32-v1.yaml)
 for a complete spike config.
 
+## Heltec WiFi LoRa 32 V4: pick the PA pin by revision
+
+The V4 ships with two front-end modules, and the pin that enables the full PA
+differs: **V4.2 (GC1109) uses GPIO46, V4.3 (KCT8103L) uses GPIO5**. Give it to
+the component as `txen_pin:` so RadioLib raises it only while transmitting
+(`example/heltec-v4-node.yaml` has a `pa_pin` substitution for this). The wrong
+pin does not stop the board joining at bench range; it transmits with the PA
+bypassed, about 45-50 dB weaker at the gateway, which is a range problem you
+will not see on the bench. HANDOFF.md has the measurement.
+
 ## Per-device keys
 
 `dev_eui` / `join_eui` / `app_key` are per-device registration secrets. ESPHome's
