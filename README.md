@@ -16,9 +16,10 @@ LoRaWAN uplink — no per-sensor firmware code.
 > OTAA-joined, uplinked with an advancing FCnt, and received a downlink through
 > `on_downlink`, on RadioLib 7.2.1 (2026-08-28) and again on `main` @ ca52396
 > with RadioLib 7.7.1 and the Task WDT change (2026-10-24; see HANDOFF.md, *HIL
-> findings*). A true power-cycle nonce check is still pending. Everything
-> merged after ca52396 -- session resume, deep sleep, the radio task, ESP-IDF,
-> EU868/AU915, typed payload fields -- compiles in CI but has not yet run on
+> findings*). v0.1.0 itself then passed the bench plan on the same board
+> (2026-10-24, Arduino and ESP-IDF): session resume across a chip reset and a
+> true power pull, deep sleep, the radio task, band-driven data rate, typed
+> payload fields and Class C. EU868/AU915 and the SX1276 path have not run on
 > hardware. Give the radio its own SPI pins: nothing else may share its bus.
 > Pin a release tag (`v0.1.0`) or a commit, not `main`.
 
@@ -179,6 +180,16 @@ The component stays generic — what a downlink *means* is yours to define in th
 handler (the mirror of the uplink codec, encoded server-side). MAC downlinks
 (ADR, link-check) are handled by RadioLib and don't reach the trigger.
 
+**Class C.** `device_class: C` keeps the receiver open between uplinks and a
+queued downlink arrives within a second (bench: 0.5 s). The network server
+must also know: ChirpStack takes the class from the device profile **at join
+time**, so set `supports_class_c` on the profile before the device joins; a
+device that joined under a Class A profile stays Class A server-side until it
+joins again, and its downlinks keep riding the next uplink. The same holds in
+reverse. A plain re-flash restores the stored session and does not rejoin, so
+after changing the profile's class, erase the device (and flush its DevNonces
+server-side) to force a fresh join.
+
 **Class-A latency.** A downlink can only be received in the window right after an
 uplink, so a server-queued downlink waits for the **next uplink** — up to one
 `uplink_interval` of latency (longer with deep sleep). Confirmed downlinks are
@@ -270,6 +281,14 @@ rule (same as the wired "app region only" point above):
 - A firmware that **changes RadioLib's nonce-buffer version** also resets the
   DevNonces, even without an erase: the old blob is no longer readable. The
   7.2.1 -> 7.7.1 bump is one; flush server-side once after flashing it.
+- **Switching a board from ESP-IDF to Arduino** also loses the stored nonces
+  and session: ESPHome's two partition tables put `nvs` at different offsets,
+  and Arduino's does not cover where ESP-IDF wrote. Flush server-side when
+  you switch that way. Arduino to ESP-IDF keeps them.
+- **The first join right after an `esptool` flash fails** on an ESP32-S3
+  console (USB-Serial/JTAG): the tool's reset fires twice, and the second
+  one lands inside the join's RX windows before the new DevNonce is saved,
+  so it is reused and rejected. The next interval joins. Not a fault.
 - **Resetting the device on the server** (deleting or re-registering it, new
   keys) while the board keeps its NVS leaves it uplinking on a session the
   server no longer knows, and it never re-joins on its own. Pair a server-side
@@ -299,6 +318,8 @@ region that allows it is not legal. Any other region is rejected.
 
 The component runs on **ESP32** under either the Arduino or the ESP-IDF
 framework: RadioLib talks to the radio through ESPHome's own SPI and GPIO.
+Both have run on hardware (Heltec V4). Moving a flashed board from ESP-IDF to
+Arduino needs a server-side nonce flush (see *Webflashing*).
 
 **Upgrading from a config with `sck_pin`/`miso_pin`/`mosi_pin` under
 `radio:`:** move them to a top-level `spi:` block as `clk_pin`, `miso_pin` and
