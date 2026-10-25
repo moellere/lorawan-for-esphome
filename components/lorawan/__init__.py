@@ -170,7 +170,7 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_SUB_BAND): cv.int_range(min=0, max=8),
             cv.Required(CONF_DEV_EUI): _hex_of_len(16),
             cv.Required(CONF_JOIN_EUI): _hex_of_len(16),
-            cv.Required(CONF_APP_KEY): _hex_of_len(32),
+            cv.Required(CONF_APP_KEY): cv.sensitive(_hex_of_len(32)),
             cv.Optional(
                 CONF_UPLINK_INTERVAL, default="5min"
             ): cv.positive_time_period_milliseconds,
