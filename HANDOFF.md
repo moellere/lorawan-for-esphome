@@ -31,12 +31,15 @@ SX1262 (US915 sub-band 2), Arduino and ESP-IDF. Session resume across a chip
 reset and a true power pull, deep sleep, the radio task, the band-driven data
 rate, typed payload fields and Class C (RxC delivery within a second) all
 passed; see *HIL findings — v0.1.0*
-below. Still open on hardware: the TTGO LoRa32 / SX1276 path and EU868 / AU915.
+below. On 2026-10-25 the **SX1276 path** passed too, on a TTGO LoRa32 T3
+v1.6.1 (Arduino): fresh join, server-side decode, and session resume across a
+chip reset and a true power pull. Still open on hardware: EU868 / AU915.
 
-Two rules came out of that run (both in the README): switching a board from
+Two rules came out of those runs (both in the README): switching a board from
 **ESP-IDF to Arduino** loses the stored nonces and session (different NVS
 partition layout), and the first join after an esptool flash fails because the
-ESP32-S3 resets twice inside the join's RX windows.
+board boots twice inside the join's RX windows (seen on the ESP32-S3 and on
+the plain ESP32).
 
 ## Reuse-first, and the WireStudio boundary
 
@@ -75,7 +78,8 @@ at all (not yet run on hardware).
 2. On a TTGO LoRa32 v1 (SX1276), it OTAA-joins a real LoRaWAN network
    (US915, sub-band 2) and an uplink is received + decoded server-side.
    **Done on a Heltec V4 / SX1262** (2026-08-28 on RadioLib 7.2.1, 2026-10-24
-   on `main` @ ca52396); TTGO / SX1276 still pending.
+   on `main` @ ca52396) and **on a TTGO T3 v1.6.1 / SX1276** (2026-10-25,
+   v0.1.0).
 3. WiFi/API stay responsive during the uplink burst. **Reframed:** the field
    profile is headless (no WiFi/API), and the radio task (#19) keeps `loop()`
    free regardless. *(see Deployment model)*
@@ -207,27 +211,23 @@ decodes them with `codec/decodeUplink.js` in CI. Generating the codec's
   `nvs` at 0xfa0000 (0x60000). Arduino -> IDF carries the session over (IDF's
   window contains Arduino's pages); IDF -> Arduino does not (HIL 4b). Treat it
   as a full erase: flush DevNonces server-side.
-- **First join after an esptool flash fails.** esptool's post-write reset over
-  USB-Serial/JTAG resets the ESP32-S3 twice; the app sends a join-request and
-  is reset inside the RX windows before the component has persisted the
-  advanced DevNonce, so the second boot reuses it and the server rejects it.
-  The next interval joins. The nonce is saved when `activateOTAA()` returns;
-  saving it right after TX would need a hook RadioLib does not expose.
-- **SX1276 is unexercised on hardware.** Every HIL run so far is the Heltec V4
-  / SX1262. The SX127x path (`dio0_pin`, no BUSY) compiles in CI but has never
-  joined.
+- **First join after an esptool flash fails.** The board boots twice a few
+  seconds apart (ESP32-S3 over USB-Serial/JTAG, and the plain ESP32 behind a
+  CP210x/CH9102 auto-reset circuit on the bench's serial proxy); the first
+  boot sends a join-request and is reset inside the RX windows before the
+  component has persisted the advanced DevNonce, so the second boot reuses it
+  and the server rejects it. The next interval joins. A power cycle boots
+  once. The nonce is saved when `activateOTAA()` returns; saving it right
+  after TX would need a hook RadioLib does not expose.
+- **SX1276 has run on Arduino only.** The SX127x path (`dio0_pin`, no BUSY)
+  passed on the TTGO T3 v1.6.1 under Arduino; under ESP-IDF it is
+  compile-checked only.
 
 ## Next steps (ordered)
 
-1. **TTGO LoRa32 v1 / SX1276** — first join on the SX127x path, US915 sub-band 2.
-   Register the device (MAC version 1.0.4) and flush its nonces once first.
-2. **Heltec V4.3 PA pin.** SLOT14 behaves like a V4.3 (KCT8103L): with
-   `txen_pin: GPIO46` the PA is bypassed (gateway RSSI -105 at ~2 m). The
-   example should select the TX-enable pin by board revision (V4.2: GPIO46,
-   V4.3: GPIO5). The homelab session is measuring the A/B and opening that PR.
-3. **EU868 / AU915 on a real gateway** of that plan; drop their untested
-   warning once each has joined.
-4. **Upstreaming** to ESPHome as an official component, once 1 passes.
+1. **EU868 / AU915 on a real gateway**; drop their untested warning once each
+   has joined.
+2. **Upstreaming** to ESPHome as an official component.
 
 Loose ends from the session that produced v0.1.0:
 
@@ -241,6 +241,46 @@ Loose ends from the session that produced v0.1.0:
 - The cloud sessions could not run a full `esphome compile` (the PlatformIO
   registry was blocked; CI was the compile gate) and could not push tags. A
   session on the workbench VM has neither limit.
+
+## HIL findings — v0.1.0 on the TTGO T3 v1.6.1 / SX1276 (2026-10-25)
+
+Board: WireStudio's spare TTGO LoRa32 T3 v1.6.1 (ESP32-PICO-D4, SX1276,
+CH9102 console) on Wyola workbench SLOT19, DevEUI `64b708fffeab8974`,
+US915 sub-band 2, Arduino. Config: roboat's `spare-ttgo-t3-battery.yaml`
+(`spare-t3-node`, no sensor fields, an 8-byte fPort 1 `send_raw` every 5 min)
+moved to v0.1.0: top-level `spi:`, the component at the v0.1.0 tree. The
+board had run this component at b7da617 (pre radio task) since 2026-09-27, so
+the SX127x path was not new to the air; v0.1.0 was. Gateway RSSI -58, SNR
+10-13 at bench range.
+
+1. **Fresh join -- pass.** Nonces flushed 13:54, flash with erase 14:10.
+   First boot's join-request was accepted server-side 14:10:25 (JOIN, addr
+   00f90885) but the board rebooted 3 s later, re-sent DevNonce 0 and got
+   "DevNonce has already been used"; `OTAA join failed: -1116` at 14:10:34.
+   The retry one interval later joined: JOIN 14:15:28 (addr 00d7f692),
+   `OTAA join OK (new session)` 14:15:33.
+2. **Uplink decoded server-side -- pass.** fCnt 0 at 14:15:47, DR0 (8 bytes
+   stays under the US915 DR0 limit), decoded by the profile codec to
+   `{uptime_s: 319, boot_count: 2, batt_mv: 4252}`; `boot_count: 2` is the
+   double boot of test 1.
+3. **Chip reset -- pass.** `serial_reset` at 14:17:45: `OTAA join OK
+   (restored)`, fCnt 1 at 14:17:49 on the same address, no JOIN event. The
+   bench reset also produced two boots (fCnt 2 at 14:17:58, `boot_count` 4),
+   both restored.
+4. **True power pull -- pass.** USB power to the board's hub port off 14:19:52
+   (port status `off`, console gone), on 14:19:59: one boot, session
+   restored, fCnt 4 at 14:20:19, no JOIN event.
+
+Left out: deep sleep, Class C, typed fields and the data-rate ladder were
+covered on the Heltec V4 and are chip-independent above the radio layer; the
+T3's regulator makes deep sleep moot anyway (see *Board power floor*).
+Handed back 14:20 on this build with the same identity.
+
+Also observed: the first HIL flash used the wrong secrets (`t3b_*` from the
+ESPHome dashboard, which are DevEUI `500291fffe9df404`) and joined as that
+device for ten minutes; that record now holds a stale session, harmless while
+that board is off the air. The `t3_*` keys for this board live in the roboat
+repo's git-ignored `node-firmware/secrets.yaml`.
 
 ## HIL findings — v0.1.0 on the Heltec V4 (2026-10-24)
 

@@ -19,8 +19,10 @@ LoRaWAN uplink — no per-sensor firmware code.
 > findings*). v0.1.0 itself then passed the bench plan on the same board
 > (2026-10-24, Arduino and ESP-IDF): session resume across a chip reset and a
 > true power pull, deep sleep, the radio task, band-driven data rate, typed
-> payload fields and Class C. EU868/AU915 and the SX1276 path have not run on
-> hardware. Give the radio its own SPI pins: nothing else may share its bus.
+> payload fields and Class C. The SX1276 path passed the same join, decode and
+> resume tests on a TTGO LoRa32 T3 v1.6.1 (2026-10-25, Arduino). EU868/AU915
+> have not run on hardware. Give the radio its own SPI pins: nothing else may
+> share its bus.
 > Pin a release tag (`v0.1.0`) or a commit, not `main`.
 
 ## Usage
@@ -295,10 +297,12 @@ rule (same as the wired "app region only" point above):
   and session: ESPHome's two partition tables put `nvs` at different offsets,
   and Arduino's does not cover where ESP-IDF wrote. Flush server-side when
   you switch that way. Arduino to ESP-IDF keeps them.
-- **The first join right after an `esptool` flash fails** on an ESP32-S3
-  console (USB-Serial/JTAG): the tool's reset fires twice, and the second
-  one lands inside the join's RX windows before the new DevNonce is saved,
-  so it is reused and rejected. The next interval joins. Not a fault.
+- **The first join right after an `esptool` flash fails**: the board boots
+  twice a few seconds apart (seen on an ESP32-S3 USB-Serial/JTAG console and
+  on a plain ESP32 behind a CH9102 auto-reset circuit), and the second boot
+  lands inside the join's RX windows before the new DevNonce is saved, so it
+  is reused and rejected. The next interval joins. A power cycle boots once.
+  Not a fault.
 - **Resetting the device on the server** (deleting or re-registering it, new
   keys) while the board keeps its NVS leaves it uplinking on a session the
   server no longer knows, and it never re-joins on its own. Pair a server-side
