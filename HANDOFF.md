@@ -229,18 +229,34 @@ decodes them with `codec/decodeUplink.js` in CI. Generating the codec's
    has joined.
 2. **Upstreaming** to ESPHome as an official component.
 
-Loose ends from the session that produced v0.1.0:
+Session notes (last updated 2026-10-25, workbench VM session closed):
 
-- A reply in the ESPHome Discord `#external-components` thread ("Why does it
-  need to block?") describes v0.1.0 and lists the bench run below as in
-  progress; it promises a follow-up with the results.
-- Workflow used so far: one PR per change from the working branch, squash-merged
-  once CI is green. After a squash merge, rebase follow-on local work with
-  `git rebase --onto origin/main <old-base>`, not a plain rebase, or the
-  squashed commits replay and conflict.
-- The cloud sessions could not run a full `esphome compile` (the PlatformIO
-  registry was blocked; CI was the compile gate) and could not push tags. A
-  session on the workbench VM has neither limit.
+- The ESPHome Discord `#external-components` thread ("Why does it need to
+  block?") has the v0.1.0 description and a follow-up with the Heltec V4
+  results. The SX1276 result is not posted there yet.
+- Bench at close: SLOT14 (Heltec V4.3) is WireStudio's gate board on the
+  v0.1.0 config in the esphome repo (29b1e6d); SLOT19 (TTGO T3 v1.6.1) is
+  WireStudio's spare on roboat `node-firmware/spare-ttgo-t3-battery.yaml`,
+  now pinned to v0.1.0 (roboat main 70f30db). Both are gate boards: flush
+  DevNonces before any reflash and hand them back on their configs. SLOT31
+  (Heltec V2) belongs to the roboat feed; leave it alone. SLOT14 and SLOT12
+  share USB hub port `1-1.2` p1, SLOT19 is alone on p4 (`uhubctl` power
+  pulls). ChirpStack device `500291fffe9df404` carries a stale session from a
+  mis-keyed flash on 2026-10-25; it rejoins on its own when that board is next
+  on the air.
+- Keys never live in this repo. The V4's are in WireStudio's provisioning,
+  the T3's `t3_*` in roboat's git-ignored secrets, the dashboard's `t3b_*`
+  are a different device.
+- All working branches are level with `main`; start the next item from
+  `main`. Workflow: one PR per change, squash-merged once CI is green. After
+  a squash merge, rebase follow-on local work with
+  `git rebase --onto origin/main <old-base>` (or merge main in), not a plain
+  rebase, or the squashed commits replay and conflict.
+- Cloud sessions could not run a full `esphome compile` (PlatformIO registry
+  blocked; CI was the compile gate) and could not push tags. A session on the
+  workbench VM has neither limit, but its auto-mode classifier refuses to copy
+  device keys out of ChirpStack or the HA secrets file without the user's
+  explicit say-so, and refuses force pushes.
 
 ## HIL findings — v0.1.0 on the TTGO T3 v1.6.1 / SX1276 (2026-10-25)
 
