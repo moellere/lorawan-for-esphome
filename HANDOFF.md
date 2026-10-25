@@ -245,7 +245,7 @@ Loose ends from the session that produced v0.1.0:
 ## HIL findings — v0.1.0 on the TTGO T3 v1.6.1 / SX1276 (2026-10-25)
 
 Board: WireStudio's spare TTGO LoRa32 T3 v1.6.1 (ESP32-PICO-D4, SX1276,
-CH9102 console) on Wyola SLOT14's neighbour SLOT19, DevEUI `64b708fffeab8974`,
+CH9102 console) on Wyola workbench SLOT19, DevEUI `64b708fffeab8974`,
 US915 sub-band 2, Arduino. Config: roboat's `spare-ttgo-t3-battery.yaml`
 (`spare-t3-node`, no sensor fields, an 8-byte fPort 1 `send_raw` every 5 min)
 moved to v0.1.0: top-level `spi:`, the component at the v0.1.0 tree. The
